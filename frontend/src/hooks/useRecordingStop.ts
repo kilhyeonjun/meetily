@@ -5,8 +5,11 @@ import { toast } from 'sonner';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
+import { indexedDBService } from '@/services/indexedDBService';
+import type { RecordingStoppedPayload } from '@/services/recordingService';
 import { storageService } from '@/services/storageService';
 import { transcriptService } from '@/services/transcriptService';
+import { reportUnsavedRecordingNotes, saveRecordingNotesToMeeting, storedRecordingId } from '@/services/recordingNotesDraft';
 import Analytics from '@/lib/analytics';
 import {
   applyPinnedSummaryLanguageToMeeting,
@@ -73,6 +76,7 @@ export function useRecordingStop(
   const stopInProgressRef = useRef(false);
 
   // Promise to track recording-stopped event data (fixes race condition with recording-stop-complete)
+  const stoppedIdentityRef = useRef<RecordingStoppedPayload | null>(null);
   const recordingStoppedDataRef = useRef<Promise<void> | null>(null);
 
   // Set up recording-stopped listener for meeting navigation
@@ -82,14 +86,16 @@ export function useRecordingStop(
     const setupRecordingStoppedListener = async () => {
       try {
         console.log('Setting up recording-stopped listener for navigation...');
-        unlistenFn = await listen<{
-          message: string;
-          folder_path?: string;
-          meeting_name?: string;
-        }>('recording-stopped', async (event) => {
+        unlistenFn = await listen<RecordingStoppedPayload>('recording-stopped', async (event) => {
           // Create promise that resolves when sessionStorage is set (prevents race condition)
           recordingStoppedDataRef.current = (async () => {
             const { folder_path, meeting_name } = event.payload;
+            stoppedIdentityRef.current=event.payload;
+            const recoveryId=storedRecordingId();
+            if(recoveryId) {
+              const metadata=await indexedDBService.getMeetingMetadata(recoveryId);
+              if(metadata) await indexedDBService.saveMeetingMetadata({...metadata,folderPath:folder_path??metadata.folderPath,targetMeetingId:event.payload.meeting_id??metadata.targetMeetingId,recordingSessionId:event.payload.recording_session_id??metadata.recordingSessionId});
+            }
 
             // Store folder_path and meeting_name for later use in handleRecordingStop
             if (folder_path) {
@@ -243,6 +249,11 @@ export function useRecordingStop(
         // Get folder_path and meeting_name from recording-stopped event
         const folderPath = sessionStorage.getItem('last_recording_folder_path');
         const savedMeetingName = sessionStorage.getItem('last_recording_meeting_name');
+        const recoveryId=storedRecordingId();
+        const recoveryMetadata=recoveryId?await indexedDBService.getMeetingMetadata(recoveryId):null;
+        const nativeIdentity=stoppedIdentityRef.current;
+        const targetMeetingId=nativeIdentity?.meeting_id??recoveryMetadata?.targetMeetingId;
+        const recordingSessionId=nativeIdentity?.recording_session_id??recoveryMetadata?.recordingSessionId;
 
         console.log('💾 Saving COMPLETE transcripts to database...', {
           transcript_count: freshTranscripts.length,
@@ -256,7 +267,9 @@ export function useRecordingStop(
           const responseData = await storageService.saveMeeting(
             savedMeetingName || meetingTitle || 'New Meeting',  // PREFER savedMeetingName (backend source)
             freshTranscripts,
-            folderPath
+            folderPath,
+            targetMeetingId ?? undefined,
+            recordingSessionId ?? undefined
           );
 
           const meetingId = responseData.meeting_id;
@@ -264,6 +277,9 @@ export function useRecordingStop(
             console.error('No meeting_id in response:', responseData);
             throw new Error('No meeting ID received from save operation');
           }
+
+          // Notes typed during the recording can be written now that the meeting exists.
+          if (!targetMeetingId) await saveRecordingNotesToMeeting(storedRecordingId(), meetingId);
 
           let shouldDetectSummaryLanguage = false;
           try {
@@ -297,6 +313,7 @@ export function useRecordingStop(
           await markMeetingAsSaved();
 
           // Clean up session storage
+          stoppedIdentityRef.current=null;
           sessionStorage.removeItem('last_recording_folder_path');
           sessionStorage.removeItem('last_recording_meeting_name');
           // Clean up IndexedDB meeting ID (redundant with markMeetingAsSaved cleanup, but ensures cleanup)
@@ -401,11 +418,17 @@ export function useRecordingStop(
           toast.error('Failed to save meeting', {
             description: saveError instanceof Error ? saveError.message : 'Unknown error'
           });
+          await reportUnsavedRecordingNotes(storedRecordingId());
           throw saveError;
         }
       } else {
         // No save needed, go back to IDLE
         setStatus(RecordingStatus.IDLE);
+        // A stop called with false can arrive while the recording is still running
+        // (mid-recording transcription errors), so the notes must stay untouched then.
+        if (isCallApi) {
+          await reportUnsavedRecordingNotes(storedRecordingId());
+        }
       }
 
       setIsMeetingActive(false);

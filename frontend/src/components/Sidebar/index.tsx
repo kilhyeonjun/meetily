@@ -1,5 +1,6 @@
 'use client';
 
+import { WorkspaceNav } from '@/components/Workspace/WorkspaceNav';
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
@@ -10,6 +11,7 @@ import { ModelConfig } from '@/components/ModelSettingsModal';
 import { SettingTabs } from '../SettingTabs';
 import { TranscriptModelProps } from '@/components/TranscriptSettings';
 import Analytics from '@/lib/analytics';
+import { searchMatchLabel } from '@/lib/search-match';
 import { invoke } from '@tauri-apps/api/core';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
@@ -645,7 +647,7 @@ const Sidebar: React.FC = () => {
               {/* Show transcript match snippet if available */}
               {hasTranscriptMatch && (
                 <div className="mt-1 ml-8 text-xs text-gray-500 bg-yellow-50 p-1.5 rounded border border-yellow-100 line-clamp-2">
-                  <span className="font-medium text-yellow-600">Match:</span> {matchingResult.matchContext}
+                  <span className="font-medium text-yellow-600">{searchMatchLabel(matchingResult.source)}</span> {matchingResult.matchContext}
                 </div>
               )}
             </div>
@@ -736,8 +738,9 @@ const Sidebar: React.FC = () => {
           {/* Content area */}
           <div className="flex-1 flex flex-col min-h-0">
             {renderCollapsedIcons()}
+            {!isCollapsed && !searchQuery && <WorkspaceNav/>}
             {/* Meeting Notes folder header - fixed */}
-            {!isCollapsed && (
+            {!isCollapsed && !!searchQuery && (
               <div className="flex-shrink-0">
                 {filteredSidebarItems.filter(item => item.type === 'folder').map(item => (
                   <div key={item.id}>
@@ -756,7 +759,7 @@ const Sidebar: React.FC = () => {
             )}
 
             {/* Scrollable meeting items */}
-            {!isCollapsed && (
+            {!isCollapsed && !!searchQuery && (
               <div className="flex-1 overflow-y-auto custom-scrollbar min-h-0">
                 {filteredSidebarItems
                   .filter(item => item.type === 'folder' && expandedFolders.has(item.id) && item.children)

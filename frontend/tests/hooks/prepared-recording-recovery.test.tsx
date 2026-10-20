@@ -1,0 +1,13 @@
+import {afterAll,expect,mock,test} from 'bun:test';
+import {act,create,type ReactTestRenderer} from 'react-test-renderer';
+const originalCore={...await import('@tauri-apps/api/core')};const originalToast={...await import('sonner')};
+const originalDB={...await import('../../src/services/indexedDBService')};const originalStorage={...await import('../../src/services/storageService')};const originalDraft={...await import('../../src/services/recordingNotesDraft')};const originalLanguage={...await import('../../src/lib/summary-language-preferences')};
+const metadata={meetingId:'recovery',targetMeetingId:'prepared',recordingSessionId:'native-session',title:'Original title',startTime:1,lastUpdated:1,transcriptCount:1,savedToSQLite:false,notesDraft:{markdown:'stale legacy draft',blocks:[]}};
+const commit=mock(async()=>({status:'saved'}));const save=mock(async(..._args:unknown[])=>({meeting_id:'prepared'}));
+mock.module('@tauri-apps/api/core',()=>({...originalCore,invoke:async()=>null}));mock.module('sonner',()=>({toast:{warning:()=>{}}}));
+mock.module('../../src/services/indexedDBService',()=>({indexedDBService:{getMeetingMetadata:async()=>metadata,getTranscripts:async()=>[{text:'recorded',timestamp:'now',confidence:1,sequenceId:1}],markMeetingSaved:async()=>{}}}));
+mock.module('../../src/services/storageService',()=>({storageService:{saveMeeting:save}}));mock.module('../../src/services/recordingNotesDraft',()=>({commitNotesDraft:commit}));mock.module('../../src/lib/summary-language-preferences',()=>({applyPinnedSummaryLanguageToMeeting:async()=>true}));
+const {useTranscriptRecovery}=await import('../../src/hooks/useTranscriptRecovery');let recovery:ReturnType<typeof useTranscriptRecovery>;
+function Harness(){recovery=useTranscriptRecovery();return null;}
+afterAll(()=>{mock.module('@tauri-apps/api/core',()=>originalCore);mock.module('sonner',()=>originalToast);mock.module('../../src/services/indexedDBService',()=>originalDB);mock.module('../../src/services/storageService',()=>originalStorage);mock.module('../../src/services/recordingNotesDraft',()=>originalDraft);mock.module('../../src/lib/summary-language-preferences',()=>originalLanguage);});
+test('restart recovery reuses native prepared identity and never imports stale recording draft over document notes',async()=>{let renderer!:ReactTestRenderer;await act(async()=>{renderer=create(<Harness/>);});let result:unknown;await act(async()=>{result=await recovery.recoverMeeting('recovery');});expect(result).toMatchObject({success:true,meetingId:'prepared'});expect(save.mock.calls[0]?.slice(2)).toEqual([null,'prepared','native-session']);expect(commit).not.toHaveBeenCalled();await act(async()=>renderer.unmount());});

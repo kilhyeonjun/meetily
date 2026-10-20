@@ -78,9 +78,9 @@ fn session_live(s: &Arc<super::RecordingState>) -> bool {
 /// and the stuck-flag failure mode returns — add a start-time reset then.
 struct StoppingGuard;
 impl StoppingGuard {
-    fn new() -> Self {
-        IS_RECORDING_STOPPING.store(true, Ordering::SeqCst);
-        StoppingGuard
+    fn acquire() -> Option<Self> {
+        IS_RECORDING_STOPPING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok().map(|_| StoppingGuard)
     }
 }
 impl Drop for StoppingGuard {
@@ -471,7 +471,10 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     app.emit("recording-started", serde_json::json!({
         "message": "Recording started successfully with parallel processing",
         "devices": ["Default Microphone", "Default System Audio"],
-        "workers": 3
+        "workers": 3,
+        "meeting_id": get_recording_identity().meeting_id,
+        "recording_session_id": get_recording_identity().recording_session_id,
+        "folder_path": get_recording_identity().folder_path
     })).map_err(|e| e.to_string())?;
 
     // Update tray menu to reflect recording state
@@ -498,6 +501,16 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     system_device_name: Option<String>,
     meeting_name: Option<String>,
 ) -> Result<(), String> {
+    start_recording_with_target(app, mic_device_name, system_device_name, meeting_name, None).await
+}
+
+pub async fn start_recording_with_target<R: Runtime>(
+    app: AppHandle<R>,
+    mic_device_name: Option<String>,
+    system_device_name: Option<String>,
+    meeting_name: Option<String>,
+    meeting_id: Option<String>,
+) -> Result<(), String> {
     info!(
         "Starting recording with specific devices; microphone_configured={}, system_audio_configured={}, meeting_name_configured={}",
         mic_device_name.is_some(),
@@ -513,6 +526,14 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     if current_recording_state {
         return Err("Recording already in progress".to_string());
     }
+
+    // Validate a prepared document before capture, model loading, or permission prompts.
+    let meeting_name = if let Some(id) = meeting_id.as_deref() {
+        let state = app.try_state::<crate::state::AppState>().ok_or("Database is not initialized")?;
+        let target = crate::database::repositories::document::DocumentsRepository::validate_recording_target(state.db_manager.pool(), id)
+            .await.map_err(|error| error.to_string())?;
+        Some(target.title)
+    } else { meeting_name };
 
     if let Err(error) = crate::ensure_onnx_runtime_available() {
         return Err(map_recording_start_error(
@@ -560,6 +581,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 
     // Create new recording manager
     let mut manager = RecordingManager::new();
+    manager.set_target_meeting(meeting_id);
 
     // Load recording preferences to check auto_save setting
     let auto_save = match super::recording_preferences::load_recording_preferences(&app).await {
@@ -663,7 +685,10 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
             mic_device_name.unwrap_or_else(|| "Default Microphone".to_string()),
             system_device_name.unwrap_or_else(|| "Default System Audio".to_string())
         ],
-        "workers": 3
+        "workers": 3,
+        "meeting_id": get_recording_identity().meeting_id,
+        "recording_session_id": get_recording_identity().recording_session_id,
+        "folder_path": get_recording_identity().folder_path
     })).map_err(|e| e.to_string())?;
 
     // Update tray menu to reflect recording state
@@ -689,6 +714,10 @@ pub async fn stop_recording<R: Runtime>(
         return Ok(());
     }
 
+    // Repeated Stop requests share the first stop's native session and event.
+    // Acquire before taking the manager so another stop cannot emit empty IDs.
+    let Some(_stopping_guard) = StoppingGuard::acquire() else { return Ok(()); };
+
     // Emit shutdown progress to frontend
     let _ = app.emit(
         "recording-shutdown-progress",
@@ -704,13 +733,6 @@ pub async fn stop_recording<R: Runtime>(
         let mut global_manager = RECORDING_MANAGER.lock().unwrap();
         global_manager.take()
     };
-
-    // Mark the stop tail as in progress so a mic-disconnect fallback that was
-    // queued before Stop short-circuits instead of retrying against the taken
-    // manager. IS_RECORDING itself stays true until the tail completes — the
-    // frontend polls it to keep the stop UI up. RAII so a panic in the tail
-    // below can't leave the flag stuck true.
-    let _stopping_guard = StoppingGuard::new();
 
     let stop_result = if let Some(mut manager) = manager_for_cleanup {
         // Use FORCE FLUSH to immediately process all accumulated audio - eliminates 30s delay!
@@ -1015,12 +1037,13 @@ pub async fn stop_recording<R: Runtime>(
     );
 
     // Perform final cleanup with the manager if available
-    let (meeting_folder, meeting_name) = if let Some(mut manager) = manager_for_cleanup {
+    let (meeting_folder, meeting_name, recording_identity) = if let Some(mut manager) = manager_for_cleanup {
         info!("🧹 Performing final cleanup and saving recording data");
 
         // Extract meeting info BEFORE async operations
         let meeting_folder = manager.get_meeting_folder();
         let meeting_name = manager.get_meeting_name();
+        let identity = manager.get_recording_identity();
 
         match tokio::time::timeout(
             tokio::time::Duration::from_secs(300), // 5 minutes max for file I/O
@@ -1039,10 +1062,10 @@ pub async fn stop_recording<R: Runtime>(
             }
         }
 
-        (meeting_folder, meeting_name)
+        (meeting_folder, meeting_name, identity)
     } else {
         info!("ℹ️ No recording manager available for cleanup");
-        (None, None)
+        (None, None, super::recording_saver::RecordingIdentity::default())
     };
 
     // Set recording flag to false
@@ -1086,7 +1109,9 @@ pub async fn stop_recording<R: Runtime>(
         serde_json::json!({
             "message": "Recording stopped - frontend will save after all transcripts received",
             "folder_path": folder_path_str,
-            "meeting_name": meeting_name_str
+            "meeting_name": meeting_name_str,
+            "meeting_id": recording_identity.meeting_id,
+            "recording_session_id": recording_identity.recording_session_id
         }),
     )
     .map_err(|e| e.to_string())?;
@@ -1694,5 +1719,25 @@ async fn trigger_mic_fallback_to_default<R: Runtime>(
                 );
             }
         }
+    }
+}
+
+/// Identity belongs to the native saver and survives frontend route reloads.
+#[tauri::command]
+pub fn get_recording_identity() -> super::recording_saver::RecordingIdentity {
+    RECORDING_MANAGER.lock().unwrap().as_ref()
+        .map(RecordingManager::get_recording_identity).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod stop_identity_tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_stop_cannot_take_another_stops_native_session() {
+        let first = StoppingGuard::acquire().unwrap();
+        assert!(StoppingGuard::acquire().is_none());
+        drop(first);
+        assert!(StoppingGuard::acquire().is_some());
     }
 }

@@ -1,0 +1,11 @@
+{
+  "productName": "Meetily KH",
+  "identifier": "com.kilhyeonjun.meetily",
+  "app": { "windows": [{ "title": "Meetily KH" }] },
+  "bundle": { "createUpdaterArtifacts": false },
+  "plugins": {
+    "updater": {
+      "endpoints": ["https://github.com/kilhyeonjun/meetily/releases/latest/download/latest.json"]
+    }
+  }
+}

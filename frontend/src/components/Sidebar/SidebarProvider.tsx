@@ -6,6 +6,7 @@ import Analytics from '@/lib/analytics';
 import { invoke } from '@tauri-apps/api/core';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import type { SummaryProcessResponse } from '@/types';
+import type { SearchMatchSource } from '@/lib/search-match';
 
 
 
@@ -27,6 +28,7 @@ interface TranscriptSearchResult {
   title: string;
   matchContext: string;
   timestamp: string;
+  source?: SearchMatchSource;
 }
 
 interface SummaryPoll {
@@ -97,7 +99,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const fetchMeetings = React.useCallback(async () => {
     if (serverAddress) {
       try {
-        const meetings = await invoke('api_get_meetings') as Array<{ id: string, title: string }>;
+        const meetings = await invoke('api_get_documents') as Array<{ id: string, title: string }>;
         const transformedMeetings = meetings.map((meeting: any) => ({
           id: meeting.id,
           title: meeting.title

@@ -4,6 +4,7 @@ import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
+import { documentService, canRecordDocument } from '@/services/documentService';
 import { recordingService } from '@/services/recordingService';
 import Analytics from '@/lib/analytics';
 import { showRecordingNotification } from '@/lib/recordingNotification';
@@ -149,7 +150,10 @@ export function useRecordingStart(
 
       console.log('Selected transcription model ready - setting up meeting title and state');
 
-      const randomTitle = generateMeetingTitle();
+      const preparedId=sessionStorage.getItem('preparedRecordingMeetingId');
+      const prepared=preparedId?await documentService.get(preparedId):null;
+      if(prepared && !canRecordDocument(prepared)) throw Error('This document cannot accept a recording');
+      const randomTitle = prepared?.title ?? generateMeetingTitle();
       setMeetingTitle(randomTitle);
 
       // Set STARTING status before initiating backend recording
@@ -160,8 +164,10 @@ export function useRecordingStart(
       await recordingService.startRecordingWithDevices(
         selectedDevices?.micDevice || null,
         selectedDevices?.systemDevice || null,
-        randomTitle
+        randomTitle,
+        prepared?.id
       );
+      sessionStorage.removeItem('preparedRecordingMeetingId');
       console.log('Backend recording started successfully');
 
       // Update state after successful backend start
@@ -243,7 +249,10 @@ export function useRecordingStart(
           // Start the actual backend recording
           try {
             // Generate meeting title
-            const generatedMeetingTitle = generateMeetingTitle();
+            const preparedId=sessionStorage.getItem('preparedRecordingMeetingId');
+            const prepared=preparedId?await documentService.get(preparedId):null;
+            if(prepared && !canRecordDocument(prepared)) throw Error('This document cannot accept a recording');
+            const generatedMeetingTitle = prepared?.title ?? generateMeetingTitle();
 
             // Set STARTING status before initiating backend recording
             setStatus(RecordingStatus.STARTING, 'Initializing recording...');
@@ -252,8 +261,10 @@ export function useRecordingStart(
             const result = await recordingService.startRecordingWithDevices(
               selectedDevices?.micDevice || null,
               selectedDevices?.systemDevice || null,
-              generatedMeetingTitle
+              generatedMeetingTitle,
+              prepared?.id
             );
+            sessionStorage.removeItem('preparedRecordingMeetingId');
             console.log('Auto-start backend recording result:', result);
 
             // Update UI state after successful backend start

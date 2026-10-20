@@ -1,0 +1,20 @@
+import {afterAll,afterEach,beforeEach,expect,mock,test} from 'bun:test';
+import {act,create,type ReactTestRenderer} from 'react-test-renderer';
+const originals=await Promise.all([import('@tauri-apps/api/core'),import('../../src/contexts/TranscriptContext'),import('../../src/components/Sidebar/SidebarProvider'),import('../../src/contexts/ConfigContext'),import('../../src/contexts/RecordingStateContext'),import('../../src/lib/analytics'),import('sonner')]);
+const calls:string[]=[];const oldWindow=globalThis.window;const oldSessionStorage=globalThis.sessionStorage;
+beforeEach(()=>{globalThis.window={addEventListener(){},removeEventListener(){}} as any;globalThis.sessionStorage={getItem:()=>null} as any;});
+mock.module('@tauri-apps/api/core',()=>({...originals[0],invoke:async(command:string)=>{calls.push(command);if(command==='api_get_transcript_config')return {provider:'parakeet'};if(command==='parakeet_init')return;if(command==='parakeet_has_available_models')return false;if(command==='parakeet_get_available_models'||command==='get_audio_devices')return [];throw Error(`Unexpected native call: ${command}`);}}));
+mock.module('../../src/contexts/TranscriptContext',()=>({useTranscripts:()=>({clearTranscripts(){},setMeetingTitle(){}})}));
+mock.module('../../src/components/Sidebar/SidebarProvider',()=>({useSidebar:()=>({setIsMeetingActive(){}})}));
+mock.module('../../src/contexts/ConfigContext',()=>({useConfig:()=>({selectedDevices:null})}));
+mock.module('../../src/contexts/RecordingStateContext',()=>({...originals[4],useRecordingState:()=>({setStatus(){}})}));
+mock.module('../../src/lib/analytics',()=>({default:{trackButtonClick(){}}}));
+mock.module('sonner',()=>({toast:{info(){},error(){}}}));
+const {usePermissionCheck}=await import('../../src/hooks/usePermissionCheck');
+const {useRecordingStart}=await import('../../src/hooks/useRecordingStart');
+let start:ReturnType<typeof useRecordingStart>;let renderer:ReactTestRenderer|undefined;
+function Harness({recordingSetupCompleted}:{recordingSetupCompleted:boolean}){usePermissionCheck(recordingSetupCompleted);start=useRecordingStart(false,()=>{});return null;}
+afterEach(async()=>{if(renderer)await act(async()=>renderer!.unmount());renderer=undefined;calls.length=0;globalThis.window=oldWindow;globalThis.sessionStorage=oldSessionStorage;});
+afterAll(()=>{for(const [index,path] of ['@tauri-apps/api/core','../../src/contexts/TranscriptContext','../../src/components/Sidebar/SidebarProvider','../../src/contexts/ConfigContext','../../src/contexts/RecordingStateContext','../../src/lib/analytics','sonner'].entries())mock.module(path,()=>({...originals[index]}));});
+test('notes-only Home does not request audio permissions and recording still stops at the missing-model guard',async()=>{await act(async()=>{renderer=create(<Harness recordingSetupCompleted={false}/>);});expect(calls).toEqual([]);await act(async()=>start.handleRecordingStart());expect(calls).toContain('parakeet_has_available_models');expect(calls.some(command=>command.includes('start_recording')||command==='get_audio_devices'||command.includes('download'))).toBe(false);});
+test('normal completed recording setup retains its device check',async()=>{await act(async()=>{renderer=create(<Harness recordingSetupCompleted={true}/>);});expect(calls).toContain('get_audio_devices');});

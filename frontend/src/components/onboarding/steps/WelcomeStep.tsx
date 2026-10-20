@@ -1,10 +1,11 @@
 import React from 'react';
+import { UseNotesFirstButton } from '../UseNotesFirstButton';
 import { Lock, Sparkles, Cpu } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { OnboardingContainer } from '../OnboardingContainer';
 import { useOnboarding } from '@/contexts/OnboardingContext';
 
-export function WelcomeStep() {
+export function WelcomeStep({ onWorkspaceReady }: { onWorkspaceReady?: () => void }) {
   const { goNext } = useOnboarding();
 
   const features = [
@@ -58,7 +59,7 @@ export function WelcomeStep() {
           >
             Get Started
           </Button>
-          <p className="text-xs text-center text-gray-500">Takes less than 3 minutes</p>
+          <UseNotesFirstButton onReady={onWorkspaceReady} />
         </div>
       </div>
     </OnboardingContainer>

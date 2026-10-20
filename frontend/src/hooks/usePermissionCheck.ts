@@ -8,7 +8,7 @@ export interface PermissionStatus {
   error: string | null;
 }
 
-export function usePermissionCheck() {
+export function usePermissionCheck(enabled = true) {
   const [status, setStatus] = useState<PermissionStatus>({
     hasMicrophone: false,
     hasSystemAudio: false,
@@ -73,10 +73,14 @@ export function usePermissionCheck() {
     }
   };
 
-  // Check permissions on mount
+  // Notes-only users should never enumerate devices just by opening Home.
   useEffect(() => {
-    checkPermissions();
-  }, []);
+    if (!enabled) {
+      setStatus(previous => ({ ...previous, isChecking: false }));
+      return;
+    }
+    void checkPermissions();
+  }, [enabled]);
 
   return {
     ...status,

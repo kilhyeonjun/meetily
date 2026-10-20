@@ -26,6 +26,8 @@ Fork: https://github.com/kilhyeonjun/meetily (public upstream fork).
 - Save transcript with an optional existing meeting ID. In one transaction either create the legacy new recording meeting, or attach to the still-unrecorded prepared meeting without rewriting its manual notes, title, schedule or logical folder. Reject an already recorded target rather than overwriting its audio/transcripts. Additional recording sessions per meeting are outside this MVP.
 - Generate a native `recording_session_id` for each recording, persist it with target meeting ID in recording metadata, propagate to stop/recovery and store it on attachment. A retry of the same session returns the same meeting result without duplicate transcript inserts; a different session aimed at an already recorded meeting is rejected. Retain legacy compatibility for old recordings without a session ID.
 - A standalone note has no recording controls. A prepared meeting has a Start Recording action and a useful empty transcript state. Recording failures retain the prepared document and notes.
+- Document responses expose `has_recording`, computed from a recording path/session or existing transcript/summary rows. Both UI routing and native recording validation use it so migrated pathless recordings keep their transcript/summary view.
+- First launch exposes a notes-first path before speech-model downloads and microphone permissions. After database readiness is verified, persist a separate backward-compatible `workspace_ready` flag. Keep recording onboarding completion and model status truthful, retain the normal recording setup entry, and preserve existing recording readiness checks.
 - Search includes manual note text as well as transcripts; no external AI search.
 
 ## Integration candidates

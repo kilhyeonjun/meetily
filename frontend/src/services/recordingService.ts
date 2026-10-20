@@ -16,10 +16,14 @@ export interface RecordingState {
   active_duration: number | null;
 }
 
+export interface RecordingIdentity { meeting_id: string | null; recording_session_id: string | null; folder_path: string | null }
+
 export interface RecordingStoppedPayload {
   message: string;
   folder_path?: string;
   meeting_name?: string;
+  meeting_id?: string | null;
+  recording_session_id?: string | null;
 }
 
 // Bound the start invoke: > ~40s Bluetooth mic cold-start and ~90s worst-case
@@ -52,6 +56,8 @@ export class RecordingService {
    * Check if recording is currently active
    * @returns Promise<boolean>
    */
+  async getIdentity(): Promise<RecordingIdentity> { return invoke('get_recording_identity'); }
+
   async isRecording(): Promise<boolean> {
     return invoke<boolean>('is_recording');
   }
@@ -90,12 +96,14 @@ export class RecordingService {
   async startRecordingWithDevices(
     micDeviceName: string | null,
     systemDeviceName: string | null,
-    meetingName: string
+    meetingName: string,
+    meetingId?: string
   ): Promise<void> {
     return withStartTimeout(invoke('start_recording_with_devices_and_meeting', {
       micDeviceName,
       systemDeviceName,
-      meetingName
+      meetingName,
+      meetingId: meetingId ?? null
     }));
   }
 
@@ -133,8 +141,8 @@ export class RecordingService {
    * @param callback - Function to call when recording starts
    * @returns Promise that resolves to unlisten function
    */
-  async onRecordingStarted(callback: () => void): Promise<UnlistenFn> {
-    return listen('recording-started', callback);
+  async onRecordingStarted(callback: (identity?: RecordingIdentity) => void): Promise<UnlistenFn> {
+    return listen<RecordingIdentity>('recording-started', event => callback(event.payload));
   }
 
   /**

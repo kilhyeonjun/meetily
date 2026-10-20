@@ -1,7 +1,7 @@
-use crate::api::{TranscriptSearchResult, TranscriptSegment};
+use crate::api::{SearchMatchSource, TranscriptSearchResult, TranscriptSegment};
+use crate::database::repositories::search_snippet;
 use chrono::Utc;
-use sqlx::{Connection, Error as SqlxError, SqlitePool};
-use log::{error, info};
+use sqlx::{Error as SqlxError, SqlitePool};
 use uuid::Uuid;
 
 pub struct TranscriptsRepository;
@@ -16,66 +16,76 @@ impl TranscriptsRepository {
         transcripts: &[TranscriptSegment],
         folder_path: Option<String>,
     ) -> Result<String, SqlxError> {
-        let meeting_id = format!("meeting-{}", Uuid::new_v4());
+        Self::save_recording(pool, meeting_title, transcripts, folder_path, None, None).await
+    }
 
-        let mut conn = pool.acquire().await?;
-        let mut transaction = conn.begin().await?;
-
-        let now = Utc::now();
-
-        // 1. Create the new meeting
-        let result = sqlx::query(
-            "INSERT INTO meetings (id, title, created_at, updated_at, folder_path) VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(&meeting_id)
-        .bind(meeting_title)
-        .bind(now)
-        .bind(now)
-        .bind(&folder_path)
-        .execute(&mut *transaction)
-        .await;
-
-        if let Err(e) = result {
-            error!("Failed to create meeting with id: {}", meeting_id);
-            transaction.rollback().await?;
-            return Err(e);
+    /// Attach once, or acknowledge an already committed session after response loss.
+    /// Manual notes and prepared document metadata are never part of this write.
+    pub async fn save_recording(
+        pool: &SqlitePool,
+        meeting_title: &str,
+        transcripts: &[TranscriptSegment],
+        folder_path: Option<String>,
+        target_id: Option<&str>,
+        recording_session_id: Option<&str>,
+    ) -> Result<String, SqlxError> {
+        if target_id.map_or(false, |id| id.trim().is_empty())
+            || recording_session_id.map_or(false, |id| id.trim().is_empty())
+        {
+            return Err(SqlxError::Protocol("Recording IDs cannot be empty".into()));
         }
-
-        info!("Successfully created meeting with id: {}", meeting_id);
-
-        // 2. Save each transcript segment with audio timing fields
+        let mut transaction = pool.begin().await?;
+        if let Some(session_id) = recording_session_id {
+            let existing: Option<(String,)> =
+                sqlx::query_as("SELECT id FROM meetings WHERE recording_session_id = ?")
+                    .bind(session_id)
+                    .fetch_optional(&mut *transaction)
+                    .await?;
+            if let Some((id,)) = existing {
+                if target_id.map_or(false, |target| target != id) {
+                    return Err(SqlxError::Protocol(
+                        "Session belongs to another meeting".into(),
+                    ));
+                }
+                transaction.commit().await?;
+                return Ok(id);
+            }
+        }
+        let meeting_id = target_id
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("meeting-{}", Uuid::new_v4()));
+        // Mark even silent recordings with no audio file as attached.
+        let session_id = recording_session_id
+            .map(str::to_owned)
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let now = Utc::now();
+        if target_id.is_some() {
+            let claimed = sqlx::query(
+                "UPDATE meetings SET folder_path = ?, recording_session_id = ?, updated_at = ?
+                 WHERE id = ? AND document_type = 'meeting' AND recording_session_id IS NULL AND folder_path IS NULL
+                 AND NOT EXISTS (SELECT 1 FROM transcripts WHERE meeting_id = meetings.id)
+                 AND NOT EXISTS (SELECT 1 FROM summary_processes WHERE meeting_id = meetings.id)"
+            ).bind(&folder_path).bind(&session_id).bind(now).bind(&meeting_id).execute(&mut *transaction).await?;
+            if claimed.rows_affected() != 1 {
+                return Err(SqlxError::Protocol(
+                    "Target is missing, a personal note, or already recorded".into(),
+                ));
+            }
+        } else {
+            sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, folder_path, recording_session_id) VALUES (?, ?, ?, ?, ?, ?)")
+                .bind(&meeting_id).bind(meeting_title).bind(now).bind(now).bind(&folder_path).bind(&session_id).execute(&mut *transaction).await?;
+        }
         for segment in transcripts {
-            let transcript_id = format!("transcript-{}", Uuid::new_v4());
-            let result = sqlx::query(
+            sqlx::query(
                 "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration)
                  VALUES (?, ?, ?, ?, ?, ?, ?)"
             )
-            .bind(&transcript_id)
-            .bind(&meeting_id)
-            .bind(&segment.text)
-            .bind(&segment.timestamp)
-            .bind(segment.audio_start_time)
-            .bind(segment.audio_end_time)
-            .bind(segment.duration)
-            .execute(&mut *transaction)
-            .await;
-
-            if let Err(e) = result {
-                error!("Failed to save transcript segment for meeting {}", meeting_id);
-                transaction.rollback().await?;
-                return Err(e);
-            }
+            .bind(format!("transcript-{}", Uuid::new_v4()))
+            .bind(&meeting_id).bind(&segment.text).bind(&segment.timestamp)
+            .bind(segment.audio_start_time).bind(segment.audio_end_time).bind(segment.duration)
+            .execute(&mut *transaction).await?;
         }
-
-        info!(
-            "Successfully saved {} transcript segments for meeting {}",
-            transcripts.len(),
-            meeting_id
-        );
-
-        // Commit the transaction
         transaction.commit().await?;
-
         Ok(meeting_id)
     }
 
@@ -104,40 +114,152 @@ impl TranscriptsRepository {
         let results = rows
             .into_iter()
             .map(|(id, title, transcript, timestamp)| {
-                let match_context = Self::get_match_context(&transcript, query);
+                let match_context = search_snippet::match_context(&transcript, query);
                 TranscriptSearchResult {
                     id,
                     title,
                     match_context,
                     timestamp,
+                    source: SearchMatchSource::Transcript,
                 }
             })
             .collect();
 
         Ok(results)
     }
+}
 
-    /// Helper function to extract a snippet of text around the first match of a query.
-    fn get_match_context(transcript: &str, query: &str) -> String {
-        let transcript_lower = transcript.to_lowercase();
-        let query_lower = query.to_lowercase();
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+    use crate::database::repositories::{
+        document::DocumentsRepository,
+        meeting_notes::{test_support::test_pool, MeetingNotesRepository},
+    };
 
-        match transcript_lower.find(&query_lower) {
-            Some(match_index) => {
-                let start_index = match_index.saturating_sub(100);
-                let end_index = (match_index + query.len() + 100).min(transcript.len());
+    #[tokio::test]
+    async fn attaches_same_id_preserves_notes_and_replays_after_lost_response() {
+        let pool = test_pool().await;
+        let meeting = DocumentsRepository::create(
+            &pool,
+            "Original title",
+            "meeting",
+            Some("2026-10-20T10:00:00Z"),
+            None,
+        )
+        .await
+        .unwrap();
+        MeetingNotesRepository::upsert(&pool, &meeting.id, "A", Some("[]"))
+            .await
+            .unwrap();
+        MeetingNotesRepository::upsert(&pool, &meeting.id, "A+B", Some("[]"))
+            .await
+            .unwrap();
+        let segments = vec![TranscriptSegment {
+            id: "segment-one".into(),
+            text: "spoken".into(),
+            timestamp: "00:01".into(),
+            audio_start_time: Some(1.0),
+            audio_end_time: Some(2.0),
+            duration: Some(1.0),
+        }];
+        let first = TranscriptsRepository::save_recording(
+            &pool,
+            "Ignored title",
+            &segments,
+            Some("/recording/session".into()),
+            Some(&meeting.id),
+            Some("session-one"),
+        )
+        .await
+        .unwrap();
+        let replay = TranscriptsRepository::save_recording(
+            &pool,
+            "Ignored",
+            &segments,
+            Some("/recording/session".into()),
+            Some(&meeting.id),
+            Some("session-one"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first, meeting.id);
+        assert_eq!(replay, first);
+        let saved = DocumentsRepository::get(&pool, &first).await.unwrap();
+        assert_eq!(saved.title, "Original title");
+        assert_eq!(saved.recording_session_id.as_deref(), Some("session-one"));
+        assert_eq!(
+            MeetingNotesRepository::get(&pool, &first)
+                .await
+                .unwrap()
+                .unwrap()
+                .markdown,
+            "A+B"
+        );
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM transcripts WHERE meeting_id = ?")
+            .bind(&first)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 1);
+        assert!(TranscriptsRepository::save_recording(
+            &pool,
+            "Other",
+            &segments,
+            None,
+            Some(&first),
+            Some("session-two")
+        )
+        .await
+        .is_err());
+    }
 
-                let mut context = String::new();
-                if start_index > 0 {
-                    context.push_str("...");
-                }
-                context.push_str(&transcript[start_index..end_index]);
-                if end_index < transcript.len() {
-                    context.push_str("...");
-                }
-                context
-            }
-            None => transcript.chars().take(200).collect(), // Fallback to the start of the transcript
-        }
+    #[tokio::test]
+    async fn rejects_notes_and_existing_recordings_and_replays_legacy_session() {
+        let pool = test_pool().await;
+        let note = DocumentsRepository::create(&pool, "Note", "note", None, None)
+            .await
+            .unwrap();
+        assert!(TranscriptsRepository::save_recording(
+            &pool,
+            "x",
+            &[],
+            None,
+            Some(&note.id),
+            Some("s")
+        )
+        .await
+        .is_err());
+        let id = TranscriptsRepository::save_recording(
+            &pool,
+            "Legacy",
+            &[],
+            Some("/audio".into()),
+            None,
+            Some("legacy-session"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            TranscriptsRepository::save_recording(
+                &pool,
+                "Legacy",
+                &[],
+                Some("/audio".into()),
+                None,
+                Some("legacy-session")
+            )
+            .await
+            .unwrap(),
+            id
+        );
+        assert!(DocumentsRepository::validate_recording_target(&pool, &id)
+            .await
+            .is_err());
+        assert!(
+            TranscriptsRepository::save_recording(&pool, "x", &[], None, Some(&id), None)
+                .await
+                .is_err()
+        );
     }
 }

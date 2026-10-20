@@ -39,12 +39,16 @@ export class StorageService {
   async saveMeeting(
     meetingTitle: string,
     transcripts: Transcript[],
-    folderPath: string | null
+    folderPath: string | null,
+    meetingId?: string,
+    recordingSessionId?: string
   ): Promise<SaveMeetingResponse> {
     return invoke<SaveMeetingResponse>('api_save_transcript', {
       meetingTitle,
       transcripts,
       folderPath,
+      meetingId: meetingId ?? null,
+      recordingSessionId: recordingSessionId ?? null,
     });
   }
 

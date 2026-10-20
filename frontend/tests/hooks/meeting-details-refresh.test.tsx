@@ -36,6 +36,14 @@ mock.module('../../src/lib/summary-language-preferences', () => ({
   detectAndCacheSummaryLanguage: async () => ({ language: 'en' }),
   readMeetingSummaryLanguage: async () => ({ language: 'en', storage: 'metadata' }),
 }));
+// The route first resolves document kind/recording state before mounting the
+// existing paginated transcript and summary view. These fixtures represent a
+// recorded meeting, not a prepared document with an empty transcript pane.
+const recordedDocument = (id: string) => ({
+  ...metadata(id), document_type: 'meeting', scheduled_at: null, folder_id: null,
+  // Legacy recordings may have no path or native session identity.
+  folder_path: null, recording_session_id: null, has_recording: true,
+});
 const metadata = (id: string) => ({ id, title: id, created_at: '2026-09-01', updated_at: '2026-09-01' });
 let readMetadata: (id: string) => Promise<unknown>;
 let readTranscripts: (id: string) => Promise<unknown>;
@@ -44,7 +52,9 @@ const transcriptPage = {
 };
 let savedSummary: SummaryProcessResponse;
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
-  if (command === 'api_get_meetings') return [];
+  if (command === 'api_get_meetings' || command === 'api_get_documents') return [];
+  if (command === 'api_get_document') return recordedDocument(args!.documentId as string);
+  if (command === 'api_get_folders') return [];
   if (command === 'api_get_summary') return { ...savedSummary, meeting_id: args!.meetingId };
   if (command === 'api_get_meeting_metadata') return readMetadata(args!.meetingId as string);
   if (command === 'api_get_meeting_transcripts') return readTranscripts(args!.meetingId as string);
@@ -120,6 +130,7 @@ function deferMetadata() {
 describe('meeting route transcript refresh', () => {
   test('navigation waits for the new meeting first transcript page before mounting its view', async () => {
     await show();
+    expect(invoke.mock.calls.find(([command]) => command === 'api_get_document')?.[1]).toEqual({ documentId: 'meeting-a' });
     await complete('Summary A', 'attempt-a');
     selectedMeeting = 'meeting-b';
     savedSummary = { ...savedSummary, meeting_id: selectedMeeting, status: 'idle', data: null, start: null };

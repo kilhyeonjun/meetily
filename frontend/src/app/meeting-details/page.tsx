@@ -9,6 +9,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { LoaderIcon } from "lucide-react";
 import { useConfig } from "@/contexts/ConfigContext";
 import { usePaginatedTranscripts } from "@/hooks/usePaginatedTranscripts";
+import { DocumentNotes } from '@/components/MeetingNotes/DocumentNotes';
+import { DocumentControls } from '@/components/Workspace/DocumentControls';
+import { documentService, isUnrecordedDocument, type DocumentInfo, type DocumentFolder } from '@/services/documentService';
 import { parseSummaryContent } from "@/lib/summary-content";
 
 interface MeetingDetailsResponse {
@@ -20,7 +23,7 @@ interface MeetingDetailsResponse {
   folder_path?: string;
 }
 
-function MeetingDetailsContent() {
+function RecordedMeetingDetailsContent() {
   const searchParams = useSearchParams();
   const meetingId = searchParams.get('id');
   const source = searchParams.get('source'); // Check if navigated from recording
@@ -292,6 +295,16 @@ function MeetingDetailsContent() {
     loadedCount={loadedCount}
     onLoadMore={loadMore}
   />;
+}
+
+function MeetingDetailsContent() {
+  const params=useSearchParams();const id=params.get('id');
+  const [document,setDocument]=useState<DocumentInfo|null>(null);const [folders,setFolders]=useState<DocumentFolder[]>([]);const [error,setError]=useState(false);const [attempt,setAttempt]=useState(0);
+  const load=useCallback(async()=>{if(!id)return;const [doc,groups]=await Promise.all([documentService.get(id),documentService.folders()]);setDocument(doc);setFolders(groups);},[id]);
+  useEffect(()=>{let cancelled=false;setDocument(null);setError(false);if(id)void Promise.all([documentService.get(id),documentService.folders()]).then(([doc,groups])=>{if(!cancelled){setDocument(doc);setFolders(groups);}},()=>{if(!cancelled)setError(true);});return()=>{cancelled=true;};},[id,attempt]);
+  if(error)return <div role="alert" className="p-6">Could not load document. <button onClick={()=>setAttempt(v=>v+1)}>Retry</button></div>;
+  if(!document||document.id!==id)return <p className="p-6">Loading document…</p>;
+  return <div className="h-screen flex flex-col min-w-0"><DocumentControls key={document.id} document={document} folders={folders} onUpdated={load}/>{document.document_type==='note'||isUnrecordedDocument(document)?<main className="flex-1 min-h-0 flex flex-col">{document.document_type==='meeting'&&<p className="p-4 text-sm text-gray-500">Prepare your agenda and notes here. Start Recording when you are ready; the transcript will be attached to this meeting.</p>}<DocumentNotes key={document.id} documentId={document.id}/></main>:<div className="flex-1 min-h-0 overflow-auto"><RecordedMeetingDetailsContent/></div>}</div>;
 }
 
 export default function MeetingDetails() {

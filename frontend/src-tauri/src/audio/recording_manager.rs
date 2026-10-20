@@ -233,6 +233,9 @@ impl RecordingManager {
     ) -> std::result::Result<mpsc::UnboundedReceiver<AudioChunk>, RecordingStartError> {
         info!("Starting recording manager (auto_save: {})", auto_save);
 
+        self.recording_saver.prepare_storage(auto_save)
+            .map_err(RecordingStartError::Other)?;
+
         // Set up transcription channel
         let (transcription_sender, transcription_receiver) = mpsc::unbounded_channel::<AudioChunk>();
         let (recording_sender, recording_receiver) = mpsc::unbounded_channel::<AudioChunk>();
@@ -512,6 +515,14 @@ impl RecordingManager {
     /// Set the meeting name for this recording session
     pub fn set_meeting_name(&mut self, name: Option<String>) {
         self.recording_saver.set_meeting_name(name);
+    }
+
+    pub fn set_target_meeting(&mut self, meeting_id: Option<String>) {
+        self.recording_saver.set_target_meeting(meeting_id);
+    }
+
+    pub fn get_recording_identity(&self) -> super::recording_saver::RecordingIdentity {
+        self.recording_saver.get_recording_identity()
     }
 
     /// Add a structured transcript segment to be saved later

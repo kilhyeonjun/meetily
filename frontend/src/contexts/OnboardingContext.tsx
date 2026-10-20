@@ -12,6 +12,7 @@ const PARAKEET_MODEL = 'parakeet-tdt-0.6b-v3-int8';
 interface OnboardingStatus {
   version: string;
   completed: boolean;
+  workspace_ready: boolean;
   current_step: number;
   model_status: {
     parakeet: string;
@@ -46,6 +47,8 @@ interface OnboardingContextType {
   selectedSummaryModel: string;
   recommendedSummaryModel: string;
   databaseExists: boolean;
+  onboardingCompleted: boolean;
+  enableNotesWorkspace: () => Promise<void>;
   isBackgroundDownloading: boolean;
   // Permissions
   permissions: OnboardingPermissions;
@@ -77,6 +80,8 @@ const OnboardingContext = createContext<OnboardingContextType | undefined>(undef
 export function OnboardingProvider({ children }: { children: React.ReactNode }) {
   const [currentStep, setCurrentStep] = useState(1);
   const [completed, setCompleted] = useState(false);
+  const [workspaceReady, setWorkspaceReady] = useState(false);
+  const enablingWorkspaceRef = useRef(false);
   const [parakeetDownloaded, setParakeetDownloaded] = useState(false);
   const [parakeetProgress, setParakeetProgress] = useState(0);
   const [parakeetProgressInfo, setParakeetProgressInfo] = useState<ParakeetProgressInfo>({
@@ -222,7 +227,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
 
     // Don't auto-save if completed (to avoid overwriting completion status)
     // Also don't auto-save if we are currently in the process of completing
-    if (completed || isCompletingRef.current) return;
+    if (completed || isCompletingRef.current || enablingWorkspaceRef.current) return;
 
     saveTimeoutRef.current = setTimeout(() => {
       saveOnboardingStatus();
@@ -231,7 +236,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     return () => {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     };
-  }, [currentStep, parakeetDownloaded, summaryModelDownloaded, completed]);
+  }, [currentStep, parakeetDownloaded, summaryModelDownloaded, completed, workspaceReady]);
 
   // Listen to Parakeet download progress
   useEffect(() => {
@@ -343,6 +348,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     try {
       const status = await invoke<OnboardingStatus | null>('get_onboarding_status');
       if (status) {
+        setWorkspaceReady(status.workspace_ready ?? false);
         console.log('[OnboardingContext] Loaded saved status:', status);
 
         if (status.completed) {
@@ -444,7 +450,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     // Safety check: if we are in the process of completing, DO NOT save
     // This prevents a race condition where a download completion event triggers a save
     // that overwrites the "completed" status set by completeOnboarding
-    if (isCompletingRef.current) {
+    if (isCompletingRef.current || enablingWorkspaceRef.current) {
       console.log('[OnboardingContext] Skipping saveOnboardingStatus because completion is in progress');
       return;
     }
@@ -454,6 +460,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         status: {
           version: '1.0',
           completed: completed,
+          workspace_ready: workspaceReady,
           current_step: currentStep,
           model_status: {
             parakeet: parakeetDownloaded ? 'downloaded' : 'not_downloaded',
@@ -465,6 +472,22 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
       });
     } catch (error) {
       console.error('[OnboardingContext] Failed to save onboarding status:', error);
+    }
+  };
+
+  const enableNotesWorkspace = async () => {
+    if (!databaseExists) throw new Error('Local database is not ready');
+    enablingWorkspaceRef.current = true;
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = undefined;
+    }
+    try {
+      const status = await invoke<OnboardingStatus>('enable_notes_workspace');
+      if (!status.workspace_ready) throw new Error('Notes workspace was not enabled');
+      setWorkspaceReady(true);
+    } finally {
+      enablingWorkspaceRef.current = false;
     }
   };
 
@@ -621,6 +644,8 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         selectedSummaryModel,
         recommendedSummaryModel,
         databaseExists,
+        onboardingCompleted: completed,
+        enableNotesWorkspace,
         isBackgroundDownloading,
         permissions,
         permissionsSkipped,

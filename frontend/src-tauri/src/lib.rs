@@ -267,6 +267,7 @@ async fn start_recording<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
     meeting_name: Option<String>,
+    meeting_id: Option<String>,
 ) -> Result<(), String> {
     log_info!(
         "Recording start requested; microphone_configured={}, system_audio_configured={}, meeting_name_configured={}",
@@ -280,11 +281,12 @@ async fn start_recording<R: Runtime>(
     }
 
     // Call the actual audio recording system with meeting name
-    match audio::recording_commands::start_recording_with_devices_and_meeting(
+    match audio::recording_commands::start_recording_with_target(
         app.clone(),
         mic_device_name,
         system_device_name,
         meeting_name.clone(),
+        meeting_id,
     )
     .await
     {
@@ -480,7 +482,7 @@ async fn start_recording_with_devices<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
 ) -> Result<(), String> {
-    start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None).await
+    start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None, None).await
 }
 
 #[tauri::command]
@@ -489,6 +491,7 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
     meeting_name: Option<String>,
+    meeting_id: Option<String>,
 ) -> Result<(), String> {
     log_info!(
         "Recording start requested; microphone_configured={}, system_audio_configured={}, meeting_name_configured={}",
@@ -497,17 +500,12 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
         meeting_name.is_some()
     );
     let meeting_name_for_notification = meeting_name.clone();
-    let recording_result = if mic_device_name.is_none() && system_device_name.is_none() {
-        audio::recording_commands::start_recording_with_meeting_name(app.clone(), meeting_name)
-            .await
+    let recording_result = if meeting_id.is_none() && mic_device_name.is_none() && system_device_name.is_none() {
+        audio::recording_commands::start_recording_with_meeting_name(app.clone(), meeting_name).await
     } else {
-        audio::recording_commands::start_recording_with_devices_and_meeting(
-            app.clone(),
-            mic_device_name,
-            system_device_name,
-            meeting_name,
-        )
-        .await
+        audio::recording_commands::start_recording_with_target(
+            app.clone(), mic_device_name, system_device_name, meeting_name, meeting_id,
+        ).await
     };
 
     match recording_result {
@@ -735,6 +733,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             start_recording,
+            audio::recording_commands::get_recording_identity,
             stop_recording,
             is_recording,
             get_transcription_status,
@@ -855,6 +854,17 @@ pub fn run() {
             api::api_get_meeting_transcripts,
             api::api_save_meeting_title,
             api::api_save_transcript,
+            api::api_create_document,
+            api::api_get_documents,
+            api::api_get_document,
+            api::api_update_document,
+            api::api_get_folders,
+            api::api_create_folder,
+            api::api_rename_folder,
+            api::api_remove_folder,
+            api::api_move_document,
+            api::api_get_meeting_notes,
+            api::api_save_meeting_notes,
             api::open_meeting_folder,
             api::test_backend_connection,
             api::debug_backend_connection,
@@ -941,6 +951,7 @@ pub fn run() {
             onboarding::save_onboarding_status_cmd,
             onboarding::reset_onboarding_status_cmd,
             onboarding::complete_onboarding,
+            onboarding::enable_notes_workspace,
             // System settings commands
             #[cfg(target_os = "macos")]
             utils::open_system_settings,

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { UseNotesFirstButton } from '../UseNotesFirstButton';
 import { Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { OnboardingContainer } from '../OnboardingContainer';
@@ -10,7 +11,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-export function SetupOverviewStep() {
+export function SetupOverviewStep({ onWorkspaceReady }: { onWorkspaceReady?: () => void }) {
   const { goNext } = useOnboarding();
   const [isMac, setIsMac] = useState(false);
 
@@ -46,7 +47,7 @@ export function SetupOverviewStep() {
   return (
     <OnboardingContainer
       title="Setup Overview"
-      description="Meetily requires that you download the Transcription & Summarization AI models for the software to work."
+      description="Download models for recording and AI summaries, or use notes first without models."
       step={2}
       totalSteps={isMac ? 4 : 3}
     >
@@ -96,6 +97,7 @@ export function SetupOverviewStep() {
           >
             Let's Go
           </Button>
+          <UseNotesFirstButton onReady={onWorkspaceReady} />
           <div className="text-center">
             <a
               href="https://github.com/Zackriya-Solutions/meeting-minutes"

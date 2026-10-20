@@ -19,6 +19,7 @@ interface TranscriptContextType {
   setMeetingTitle: (title: string) => void;
   clearTranscripts: () => void;
   currentMeetingId: string | null;
+  preparedMeetingId: string | null;
   markMeetingAsSaved: () => Promise<void>;
 }
 
@@ -26,6 +27,7 @@ const TranscriptContext = createContext<TranscriptContextType | undefined>(undef
 
 export function TranscriptProvider({ children }: { children: ReactNode }) {
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
+  const [preparedMeetingId, setPreparedMeetingId] = useState<string | null>(null);
   const [meetingTitle, setMeetingTitle] = useState('+ New Call');
   const [currentMeetingId, setCurrentMeetingId] = useState<string | null>(null);
 
@@ -90,12 +92,26 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       try {
         // Initialize IndexedDB
         await indexedDBService.init();
+        // Rebuild native identity after a webview reload during an active recording.
+        try {
+          const identity = await recordingService.getIdentity();
+          if (identity.recording_session_id) {
+            setPreparedMeetingId(identity.meeting_id);
+            const recoveryId=identity.recording_session_id;
+            setCurrentMeetingId(recoveryId);
+            sessionStorage.setItem('indexeddb_current_meeting_id',recoveryId);
+            const existing=await indexedDBService.getMeetingMetadata(recoveryId);
+            if (!existing) await indexedDBService.saveMeetingMetadata({meetingId:recoveryId,title:await recordingService.getRecordingMeetingName()??'Meeting',startTime:Date.now(),lastUpdated:Date.now(),transcriptCount:0,savedToSQLite:false,folderPath:identity.folder_path??undefined,targetMeetingId:identity.meeting_id??undefined,recordingSessionId:identity.recording_session_id});
+          }
+        } catch(error) { console.warn('Could not restore native recording identity',error); }
 
         // Listen for recording-started event
-        unlistenRecordingStarted = await recordingService.onRecordingStarted(async () => {
+        unlistenRecordingStarted = await recordingService.onRecordingStarted(async (eventIdentity) => {
           try {
+            const identity = eventIdentity ?? await recordingService.getIdentity();
+            setPreparedMeetingId(identity.meeting_id);
             // Generate unique meeting ID
-            const meetingId = `meeting-${Date.now()}`;
+            const meetingId = identity.recording_session_id ?? `meeting-${Date.now()}`;
             setCurrentMeetingId(meetingId);
 
             // Store in sessionStorage as fallback for markMeetingAsSaved
@@ -116,7 +132,9 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
               lastUpdated: Date.now(),
               transcriptCount: 0,
               savedToSQLite: false,
-              folderPath: undefined // Will update shortly
+              folderPath: identity.folder_path ?? undefined,
+              targetMeetingId: identity.meeting_id ?? undefined,
+              recordingSessionId: identity.recording_session_id ?? undefined
             });
 
             // Synchronize meeting title to state (fixes tray stop title issue)
@@ -145,12 +163,15 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         // Listen for recording-stopped event
         unlistenRecordingStopped = await recordingService.onRecordingStopped(async (payload) => {
           try {
-            if (currentMeetingId) {
+            const recoveryId = currentMeetingId ?? sessionStorage.getItem('indexeddb_current_meeting_id');
+            if (recoveryId) {
               // Update folder path in IndexedDB
-              const metadata = await indexedDBService.getMeetingMetadata(currentMeetingId);
+              const metadata = await indexedDBService.getMeetingMetadata(recoveryId);
 
-              if (metadata && payload.folder_path) {
-                metadata.folderPath = payload.folder_path;
+              if (metadata) {
+                metadata.folderPath = payload.folder_path ?? metadata.folderPath;
+                metadata.targetMeetingId = payload.meeting_id ?? metadata.targetMeetingId;
+                metadata.recordingSessionId = payload.recording_session_id ?? metadata.recordingSessionId;
                 await indexedDBService.saveMeetingMetadata(metadata);
               }
             }
@@ -520,6 +541,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     setMeetingTitle,
     clearTranscripts,
     currentMeetingId,
+    preparedMeetingId,
     markMeetingAsSaved,
   };
 

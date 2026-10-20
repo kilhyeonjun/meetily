@@ -8,6 +8,7 @@ import MainContent from '@/components/MainContent'
 import AnalyticsProvider from '@/components/AnalyticsProvider'
 import { Toaster, toast } from 'sonner'
 import "sonner/dist/styles.css"
+import { useWorkspaceAccess } from '@/hooks/useWorkspaceAccess'
 import { useState, useEffect, useCallback } from 'react'
 import { listen, UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
@@ -68,35 +69,12 @@ export default function RootLayout({
 }: {
   children: React.ReactNode
 }) {
-  const [showOnboarding, setShowOnboarding] = useState(false)
-  const [onboardingCompleted, setOnboardingCompleted] = useState(false)
+  const { isChecking, showOnboarding, setShowOnboarding, onboardingCompleted, markWorkspaceReady } = useWorkspaceAccess()
 
   // Import audio state
   const [showDropOverlay, setShowDropOverlay] = useState(false)
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [importFilePath, setImportFilePath] = useState<string | null>(null)
-
-  useEffect(() => {
-    // Check onboarding status first
-    invoke<{ completed: boolean } | null>('get_onboarding_status')
-      .then((status) => {
-        const isComplete = status?.completed ?? false
-        setOnboardingCompleted(isComplete)
-
-        if (!isComplete) {
-          console.log('[Layout] Onboarding not completed, showing onboarding flow')
-          setShowOnboarding(true)
-        } else {
-          console.log('[Layout] Onboarding completed, showing main app')
-        }
-      })
-      .catch((error) => {
-        console.error('[Layout] Failed to check onboarding status:', error)
-        // Default to showing onboarding if we can't check
-        setShowOnboarding(true)
-        setOnboardingCompleted(false)
-      })
-  }, [])
 
   // Disable context menu in production
   useEffect(() => {
@@ -111,7 +89,7 @@ export default function RootLayout({
     const unlisten = listen('request-recording-toggle', () => {
       console.log('[Layout] Received request-recording-toggle from tray');
 
-      if (showOnboarding) {
+      if (showOnboarding || isChecking) {
         toast.error("Please complete setup first", {
           description: "You need to finish onboarding before you can start recording."
         });
@@ -125,7 +103,7 @@ export default function RootLayout({
     return () => {
       unlisten.then(fn => fn());
     };
-  }, [showOnboarding]);
+  }, [showOnboarding, isChecking]);
 
   // Handle file drop for audio import
   const handleFileDrop = useCallback((paths: string[]) => {
@@ -158,7 +136,7 @@ export default function RootLayout({
 
   // Listen for drag-drop events
   useEffect(() => {
-    if (showOnboarding) return; // Don't handle drops during onboarding
+    if (showOnboarding || isChecking) return; // Don't handle drops during onboarding
 
     const unlisteners: UnlistenFn[] = [];
     const cleanedUpRef = { current: false };
@@ -206,7 +184,7 @@ export default function RootLayout({
       cleanedUpRef.current = true;
       unlisteners.forEach((unlisten) => unlisten());
     };
-  }, [showOnboarding, handleFileDrop]);
+  }, [showOnboarding, isChecking, handleFileDrop]);
 
   // Handle import dialog close
   const handleImportDialogClose = useCallback((open: boolean) => {
@@ -225,7 +203,6 @@ export default function RootLayout({
   const handleOnboardingComplete = () => {
     console.log('[Layout] Onboarding completed, reloading app')
     setShowOnboarding(false)
-    setOnboardingCompleted(true)
     // Optionally reload the window to ensure all state is fresh
     window.location.reload()
   }
@@ -248,12 +225,20 @@ export default function RootLayout({
                               <DownloadProgressToastProvider />
 
                               {/* Show onboarding or main app */}
-                              {showOnboarding ? (
-                                <OnboardingFlow onComplete={handleOnboardingComplete} />
+                              {isChecking ? (
+                                <p role="status" className="p-6">Opening your workspace…</p>
+                              ) : showOnboarding ? (
+                                <OnboardingFlow onComplete={handleOnboardingComplete} onWorkspaceReady={() => {
+                                  markWorkspaceReady();
+                                  window.location.assign('/workspace');
+                                }} />
                               ) : (
                                 <div className="flex">
                                   <Sidebar />
-                                  <MainContent>{children}</MainContent>
+                                  <MainContent>
+                                    {!onboardingCompleted && <div className="border-b p-3 text-sm"><button className="underline" onClick={() => setShowOnboarding(true)}>Set up recording</button><span className="ml-3 text-gray-500">Notes work without models. Recording setup is optional.</span></div>}
+                                    {children}
+                                  </MainContent>
                                 </div>
                               )}
                               {/* Import audio overlay and dialog */}

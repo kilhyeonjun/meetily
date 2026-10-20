@@ -9,9 +9,10 @@ import {
 
 interface OnboardingFlowProps {
   onComplete: () => void;
+  onWorkspaceReady?: () => void;
 }
 
-export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
+export function OnboardingFlow({ onComplete, onWorkspaceReady }: OnboardingFlowProps) {
   const { currentStep } = useOnboarding();
   const [isMac, setIsMac] = React.useState(false);
 
@@ -39,8 +40,8 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
   return (
     <div className="onboarding-flow">
-      {currentStep === 1 && <WelcomeStep />}
-      {currentStep === 2 && <SetupOverviewStep />}
+      {currentStep === 1 && <WelcomeStep onWorkspaceReady={onWorkspaceReady} />}
+      {currentStep === 2 && <SetupOverviewStep onWorkspaceReady={onWorkspaceReady} />}
       {currentStep === 3 && <DownloadProgressStep />}
       {currentStep === 4 && isMac && <PermissionsStep />}
     </div>

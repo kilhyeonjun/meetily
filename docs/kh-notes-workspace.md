@@ -1,7 +1,9 @@
 # Meetily KH workspace
 
 This personal fork adds prepared meetings, standalone notes and single-level
-folders. Its notes editor is based on the work in upstream
+folders. The reviewed execution plan is preserved in
+[docs/plans](plans/2026-10-20-kh-notes-workspace.md).
+Its notes editor is based on the work in upstream
 [PR #849](https://github.com/Zackriya-Solutions/meetily/pull/849)
 (`1ea2b33f4ddc20a7ef12b4872cc59913a0d67926`). Folder behavior was reviewed
 against [PR #842](https://github.com/Zackriya-Solutions/meetily/pull/842);

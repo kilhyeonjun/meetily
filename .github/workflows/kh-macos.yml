@@ -2,7 +2,7 @@ name: KH Apple Silicon verification
 
 on:
   push:
-    branches: [enhance/kh-notes-workspace]
+    branches: [enhance/kh-notes-workspace, enhance/kh-workspace-v2]
   pull_request:
     branches: [main, devtest]
   workflow_dispatch:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: kh-macos-${{ github.ref }}
+  group: kh-macos-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:

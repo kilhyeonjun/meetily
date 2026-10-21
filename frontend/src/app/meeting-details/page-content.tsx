@@ -6,6 +6,8 @@ import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import Analytics from '@/lib/analytics';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
+import { useMeetingAudio } from '@/hooks/meeting-details/useMeetingAudio';
+import { RecordingPanel, type RecordingPanelRef } from '@/components/MeetingDetails/RecordingPanel';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
 import { SummaryPanel } from '@/components/MeetingDetails/SummaryPanel';
 import { NotesRecovery, exportNotes } from '@/components/MeetingNotes/DocumentNotes';
@@ -133,6 +135,8 @@ export default function PageContent({
   });
 
   const notes = useMeetingNotes(meeting.id);
+  const audio=useMeetingAudio(meeting.id);
+  const playerRef=useRef<RecordingPanelRef>(null);
 
   const copyOperations = useCopyOperations({
     meeting,
@@ -198,6 +202,8 @@ export default function PageContent({
       transition={{ duration: 0.3, ease: 'easeOut' }}
       className="flex flex-col h-screen min-w-0 bg-gray-50"
     >
+      {audio.audioSrc&&<RecordingPanel ref={playerRef} audioSrc={audio.audioSrc} meetingTitle={meeting.title}/>}
+      {!audio.loading&&!audio.audioSrc&&<p role={audio.error?'alert':undefined} className="shrink-0 border-b p-2 text-xs text-gray-500">{audio.error?'Recording unavailable.':'No audio recording is available for this meeting.'}</p>}
       <div className="flex flex-1 min-w-0 overflow-hidden">
         <MeetingDetailsSplitView
           activeTab={activeTab}
@@ -223,6 +229,7 @@ export default function PageContent({
               onLoadMore={onLoadMore}
               meetingId={meeting.id}
               meetingFolderPath={meeting.folder_path}
+              onTimestampClick={audio.audioSrc?seconds=>playerRef.current?.seekTo(seconds):undefined}
               onRefetchTranscripts={onRefetchTranscripts}
             />
           }

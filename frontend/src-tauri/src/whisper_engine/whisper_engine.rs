@@ -568,6 +568,10 @@ impl WhisperEngine {
         };
         params.set_language(language_code);
         params.set_translate(should_translate);
+        // Vocabulary glossary adapted from upstream PR #869.
+        if let Some(glossary) = crate::substitutions::initial_prompt() {
+            params.set_initial_prompt(&glossary);
+        }
 
         // CRITICAL: Disable timestamp tokens to prevent whisper.cpp chunking heuristics
         // The "single timestamp ending - skip entire chunk" optimization incorrectly discards
@@ -656,7 +660,7 @@ impl WhisperEngine {
             0.0
         };
 
-        Ok((cleaned_result, avg_confidence, is_partial))
+        Ok((crate::substitutions::apply(&cleaned_result), avg_confidence, is_partial))
     }
 
     pub async fn transcribe_audio(
@@ -682,6 +686,10 @@ impl WhisperEngine {
         };
         params.set_language(language_code);
         params.set_translate(should_translate);
+        // Vocabulary glossary adapted from upstream PR #869.
+        if let Some(glossary) = crate::substitutions::initial_prompt() {
+            params.set_initial_prompt(&glossary);
+        }
         params.set_no_timestamps(true);
         params.set_token_timestamps(true);
         params.set_print_special(false);
@@ -717,7 +725,7 @@ impl WhisperEngine {
             }
         }
 
-        Ok(Self::clean_repetitive_text(result.trim()))
+        Ok(crate::substitutions::apply(&Self::clean_repetitive_text(result.trim())))
     }
     
     pub async fn get_models_directory(&self) -> PathBuf {

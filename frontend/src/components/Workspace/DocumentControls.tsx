@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { documentService, canRecordDocument, type DocumentInfo, type DocumentFolder } from '@/services/documentService';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { folderPath } from '@/lib/workspace-tree';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 
 /** datetime-local expects local wall time, whereas SQLite stores an ISO instant. */
@@ -66,7 +67,7 @@ export function DocumentControls({ document, folders, onUpdated }: {
       <label>
         Folder <select aria-label="Document folder" className="border rounded" disabled={saving} value={document.folder_id ?? ''} onChange={event => void save(() => documentService.move(document.id, event.target.value || null))}>
           <option value="">Unfiled</option>
-          {folders.map(folder => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
+          {folders.map(folder => <option key={folder.id} value={folder.id}>{folderPath(folder.id,folders)}</option>)}
         </select>
       </label>
       {canRecordDocument(document) && (

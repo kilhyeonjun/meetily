@@ -34,6 +34,7 @@ export interface VirtualizedTranscriptViewProps {
     totalCount?: number;
     loadedCount?: number;
     onLoadMore?: () => void;
+    onTimestampClick?: (seconds:number)=>void;
 }
 
 // Threshold for enabling virtualization (below this, use simple rendering)
@@ -71,6 +72,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     confidence,
     isStreaming,
     showConfidence,
+    onTimestampClick,
 }: {
     id: string;
     timestamp: number;
@@ -78,6 +80,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     confidence?: number;
     isStreaming: boolean;
     showConfidence: boolean;
+    onTimestampClick?: (seconds:number)=>void;
 }) {
     const displayText = cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
 
@@ -85,7 +88,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
         <div id={`segment-${id}`} className="mb-3">
             <div className="flex items-start gap-2">
                 <Tooltip>
-                    <TooltipTrigger>
+                    <TooltipTrigger disabled={!onTimestampClick} onClick={()=>onTimestampClick?.(timestamp)} aria-label={`Play recording from ${formatRecordingTime(timestamp)}`} className={onTimestampClick?'rounded hover:bg-blue-50 focus-visible:ring-2 focus-visible:ring-blue-500':'cursor-default'}>
                         <span className="text-xs text-gray-400 mt-1 flex-shrink-0 min-w-[50px]">
                             {formatRecordingTime(timestamp)}
                         </span>
@@ -124,6 +127,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     totalCount = 0,
     loadedCount = 0,
     onLoadMore,
+    onTimestampClick,
 }) => {
     // Create scroll ref first - shared between virtualizer and auto-scroll hook
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -295,6 +299,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         text={getDisplayText(segment)}
                                         confidence={segment.confidence}
                                         isStreaming={isStreaming}
+                                        onTimestampClick={onTimestampClick}
                                         showConfidence={showConfidence}
                                     />
                                 </div>
@@ -351,6 +356,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         text={getDisplayText(segment)}
                                         confidence={segment.confidence}
                                         isStreaming={isStreaming}
+                                        onTimestampClick={onTimestampClick}
                                         showConfidence={showConfidence}
                                     />
                                 </motion.div>

@@ -79,10 +79,27 @@ pub async fn api_create_folder<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, AppState>,
     name: String,
+    parent_id: Option<String>,
 ) -> Result<Folder, String> {
-    let result = DocumentsRepository::create_folder(state.db_manager.pool(), &name)
-        .await
-        .map_err(|e| e.to_string())?;
+    let result =
+        DocumentsRepository::create_folder_in(state.db_manager.pool(), &name, parent_id.as_deref())
+            .await
+            .map_err(|e| e.to_string())?;
+    documents_changed(&app);
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn api_move_folder<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    folder_id: String,
+    parent_id: Option<String>,
+) -> Result<Folder, String> {
+    let result =
+        DocumentsRepository::move_folder(state.db_manager.pool(), &folder_id, parent_id.as_deref())
+            .await
+            .map_err(|e| e.to_string())?;
     documents_changed(&app);
     Ok(result)
 }

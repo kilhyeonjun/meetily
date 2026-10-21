@@ -23,10 +23,14 @@ mock.module('../../src/lib/analytics', () => ({ default: {
   trackBackendConnection() {}, trackSummaryGenerationStarted: async () => {},
   trackSummaryGenerationCompleted: trackCompletion,
 } }));
+let saveContext:(args:Record<string,unknown>)=>Promise<void>=async()=>{};
 let startProcess: () => Promise<{ process_id: string }>;
 let getSummary: (meetingId: string) => Promise<SummaryProcessResponse>;
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
-  if (command === 'api_get_meetings') return [];
+  if (command === 'api_get_meetings' || command === 'api_get_documents') return [];
+  if (command === 'api_save_meeting_summary_context') return saveContext(args!);
+  if (command === 'api_get_meeting_summary_context') return {context:'',useInherited:true,inherited:[]};
+  if (command === 'api_get_global_summary_context') return {context:''};
   if (command === 'api_get_summary') return getSummary(args!.meetingId as string);
   if (command === 'api_get_meeting_transcripts') return { transcripts: [{ text: 'Meeting transcript', timestamp: '00:00' }], total_count: 1 };
   if (command === 'get_ollama_models') return [{ name: 'test' }];
@@ -71,6 +75,7 @@ const realClearInterval = globalThis.clearInterval;
 beforeEach(() => {
   renderer = undefined as unknown as ReactTestRenderer;
   configuredModel = 'test';
+  saveContext=async()=>{};
   timers.clear(); notify.mockClear(); trackCompletion.mockClear(); invoke.mockClear();
   getSummary = async () => response();
   startProcess = async () => ({ process_id: 'attempt-a' });
@@ -270,4 +275,24 @@ describe('summary state restored when returning to a meeting', () => {
     expect(state.summaryStatus).toBe('completed');
     expect(text()).toContain('Finished summary');
   });
+});
+
+const {summaryContextController}=await import('../../src/services/summaryContextService');
+test('Generate waits for exact meeting context save and failed Regenerate never starts a stale request',async()=>{
+  const id='context-generate-boundary';
+  await show(response({meeting_id:id,status:'idle',start:null}),id);
+  const context=summaryContextController(id);await context.load();
+  context.edit({context:'Background 🙂',useInherited:false});
+  let release!:()=>void;let started!:()=>void;const saving=new Promise<void>(resolve=>{started=resolve;});
+  saveContext=async(args)=>{expect(args).toEqual({meetingId:id,context:'Background 🙂',useInherited:false});started();await new Promise<void>(resolve=>{release=resolve;});};
+  let generation!:Promise<void>;
+  await act(async()=>{generation=state.handleGenerateSummary();await saving;});
+  expect(invoke.mock.calls.filter(([command])=>command==='api_process_transcript')).toHaveLength(0);
+  await act(async()=>{release();await generation;});
+  expect(invoke.mock.calls.find(([command])=>command==='api_process_transcript')?.[1]?.useInheritedContext).toBe(false);
+  expect(invoke.mock.calls.find(([command])=>command==='api_process_transcript')?.[1]?.customPrompt).toBeNull();
+  invoke.mockClear();context.edit({context:'Newer pending background',useInherited:false});saveContext=async()=>{throw Error('Context save failed');};
+  await act(async()=>{await state.handleRegenerateSummary();});
+  expect(invoke.mock.calls.some(([command])=>command==='api_process_transcript')).toBe(false);
+  expect(state.summaryError).toContain('Context save failed');
 });

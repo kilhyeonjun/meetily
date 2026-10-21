@@ -9,6 +9,8 @@ import { TranscriptSettings } from '@/components/TranscriptSettings';
 import { RecordingSettings } from '@/components/RecordingSettings';
 import { PreferenceSettings } from '@/components/PreferenceSettings';
 import { SummaryModelSettings } from '@/components/SummaryModelSettings';
+import { SummaryContextBox } from '@/components/MeetingDetails/SummaryContextBox';
+import { SubstitutionsSettings } from '@/components/SubstitutionsSettings';
 import { BetaSettings } from '@/components/BetaSettings';
 import { useConfig } from '@/contexts/ConfigContext';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
@@ -19,6 +21,8 @@ const TABS = [
   { value: 'recording', label: 'Recordings', icon: Mic },
   { value: 'Transcriptionmodels', label: 'Transcription', icon: DatabaseIcon },
   { value: 'summaryModels', label: 'Summary', icon: SparkleIcon },
+  { value: 'vocabulary', label: 'Vocabulary', icon: DatabaseIcon },
+  { value: 'context', label: 'Summary context', icon: SparkleIcon },
   { value: 'beta', label: 'Beta', icon: FlaskConical }
 ] as const;
 
@@ -85,7 +89,7 @@ export default function SettingsPage() {
         <div className="max-w-6xl mx-auto p-8 pt-6">
           {/* Tabs */}
           <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="bg-transparent relative rounded-none border-b border-gray-200 p-0 h-auto">
+            <TabsList className="bg-transparent relative rounded-none border-b border-gray-200 p-0 h-auto flex-wrap justify-start">
               {TABS.map((tab, index) => {
                 const Icon = tab.icon;
                 return (
@@ -124,6 +128,8 @@ export default function SettingsPage() {
             <TabsContent value="summaryModels">
               <SummaryModelSettings />
             </TabsContent>
+            <TabsContent value="vocabulary"><SubstitutionsSettings /></TabsContent>
+            <TabsContent value="context"><SummaryContextBox /></TabsContent>
             <TabsContent value="beta" className="mt-6">
               <BetaSettings />
             </TabsContent>

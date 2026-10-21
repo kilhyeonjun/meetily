@@ -1,0 +1,6 @@
+import {expect,test} from 'bun:test';
+import {folderPath,folderAncestors,folderMoveTargets,workspaceContents,workspaceHref} from '../../src/lib/workspace-tree';
+const folders=[{id:'a',name:'Research',parent_id:null},{id:'b',name:'Weekly',parent_id:'a'},{id:'c',name:'Weekly',parent_id:null},{id:'d',name:'Child',parent_id:'b'}] as any;
+const docs=[{id:'one',title:'Zebra',folder_id:'a',document_type:'meeting'},{id:'two',title:'Alpha',folder_id:null,document_type:'note'}] as any;
+test('breadcrumbs and move targets disambiguate equal folder names and exclude descendants',()=>{expect(folderPath('b',folders)).toBe('/Research/Weekly');expect(folderAncestors('b',folders).map((f:any)=>f.id)).toEqual(['a','b']);expect(folderMoveTargets('a',folders).map((f:any)=>f.id)).toEqual(['c']);});
+test('browser lists immediate children and scoped documents with virtual All/Unfiled',()=>{expect(workspaceContents('a',folders,docs,'','title').folders.map((f:any)=>f.id)).toEqual(['b']);expect(workspaceContents('a',folders,docs,'','title').documents.map((d:any)=>d.id)).toEqual(['one']);expect(workspaceContents('unfiled',folders,docs,'','title').documents.map((d:any)=>d.id)).toEqual(['two']);expect(workspaceContents('all',folders,docs,'alp','title').documents.map((d:any)=>d.id)).toEqual(['two']);expect(workspaceHref('b')).toBe('/workspace?folderId=b');});

@@ -1,0 +1,20 @@
+import {afterAll,afterEach,expect,mock,test} from 'bun:test';
+import {act,create,type ReactTestRenderer} from 'react-test-renderer';
+const core={...await import('@tauri-apps/api/core')};const nav={...await import('next/navigation')};const events={...await import('@tauri-apps/api/event')};
+const calls:any[]=[];const push=mock(()=>{});const oldWindow=globalThis.window;
+const folders=[{id:'a',name:'Research',parent_id:null},{id:'b',name:'Weekly',parent_id:'a'},{id:'c',name:'Weekly',parent_id:null}];
+mock.module('next/navigation',()=>({...nav,useRouter:()=>({push,replace:push,back:push})}));mock.module('@tauri-apps/api/event',()=>({...events,listen:async()=>()=>{}}));mock.module('@tauri-apps/api/core',()=>({...core,invoke:async(command:string,args:any)=>{calls.push([command,args]);if(command==='api_get_folders')return folders;if(command==='api_get_documents')return [{id:'doc',title:'Agenda',document_type:'meeting',folder_id:'a',updated_at:'now'}];if(command==='api_create_folder'||command==='api_move_folder'||command==='api_move_document')return;throw Error(command);}}));
+const {WorkspaceProvider}=await import('../../src/components/Workspace/WorkspaceProvider');const {WorkspaceTree}=await import('../../src/components/Workspace/WorkspaceTree');const {WorkspaceBrowser}=await import('../../src/components/Workspace/WorkspaceBrowser');
+let renderer:ReactTestRenderer|undefined;const text=(n:any):string=>typeof n==='string'?n:(n?.children??[]).map(text).join('');const button=(name:string)=>renderer!.root.findAllByType('button').find(b=>text(b)===name)!;
+afterEach(async()=>{if(renderer)await act(async()=>renderer!.unmount());renderer=undefined;calls.length=0;globalThis.window=oldWindow;});afterAll(()=>{mock.module('@tauri-apps/api/core',()=>core);mock.module('next/navigation',()=>nav);mock.module('@tauri-apps/api/event',()=>events);});
+test('selected folder browser creates a child in current folder and shows only immediate folder/doc rows',async()=>{globalThis.window={addEventListener(){},removeEventListener(){},dispatchEvent(){},localStorage:{getItem:()=>null,setItem(){}}} as any;await act(async()=>{renderer=create(<WorkspaceProvider><WorkspaceBrowser folderId="a"/></WorkspaceProvider>);});expect(text(renderer!.toJSON())).toContain('Agenda');expect(renderer!.root.findAllByProps({'data-folder-row':'b'})).toHaveLength(1);expect(renderer!.root.findAllByProps({'data-folder-row':'c'})).toHaveLength(0);await act(async()=>button('New subfolder').props.onClick());act(()=>renderer!.root.findByProps({'aria-label':'Name'}).props.onChange({target:{value:'Child'}}));await act(async()=>renderer!.root.findByType('form').props.onSubmit({preventDefault(){}}));expect(calls).toContainEqual(['api_create_folder',{name:'Child',parentId:'a'}]);});
+
+test('selected nested folder expands its ancestors, tree keyboard moves focus and drop uses the same move command once',async()=>{
+  const focused:string[]=[];const data=new Map<string,string>();globalThis.window={addEventListener(){},removeEventListener(){},dispatchEvent(){},localStorage:{getItem:(k:string)=>data.get(k)??null,setItem:(k:string,v:string)=>data.set(k,v)}} as any;
+  await act(async()=>{renderer=create(<WorkspaceProvider><WorkspaceTree/><WorkspaceBrowser folderId="b"/></WorkspaceProvider>,{createNodeMock:node=>({focus(){focused.push(node.props['data-folder-id']);}})});});
+  const parent=renderer!.root.findByProps({'data-folder-id':'a'});const child=renderer!.root.findByProps({'data-folder-id':'b'});
+  expect(parent.props['aria-expanded']).toBe(true);expect(child.props['aria-selected']).toBe(true);
+  act(()=>parent.props.onKeyDown({key:'ArrowRight',preventDefault(){}}));expect(focused).toContain('b');
+  let stopped=0;await act(async()=>child.props.onDrop({preventDefault(){},stopPropagation(){stopped++;},dataTransfer:{getData:()=>JSON.stringify({type:'document',id:'doc'})}}));
+  expect(stopped).toBe(1);expect(calls.filter(([command])=>command==='api_move_document')).toEqual([['api_move_document',{documentId:'doc',folderId:'b'}]]);
+});

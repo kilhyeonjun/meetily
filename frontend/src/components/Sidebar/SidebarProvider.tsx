@@ -3,6 +3,10 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import Analytics from '@/lib/analytics';
+import { usePaneResize } from '@/hooks/usePaneResize';
+export const SIDEBAR_COLLAPSED_WIDTH=64;
+export const SIDEBAR_MIN_WIDTH=200;
+export const SIDEBAR_MAX_WIDTH=480;
 import { invoke } from '@tauri-apps/api/core';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import type { SummaryProcessResponse } from '@/types';
@@ -43,6 +47,8 @@ interface SidebarContextType {
   sidebarItems: SidebarItem[];
   isCollapsed: boolean;
   toggleCollapse: () => void;
+  sidebarWidth: number;
+  sidebarResize: ReturnType<typeof usePaneResize>;
   meetings: CurrentMeeting[];
   setMeetings: (meetings: CurrentMeeting[]) => void;
   isMeetingActive: boolean;
@@ -80,6 +86,9 @@ export const useSidebar = () => {
 export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const [currentMeeting, setCurrentMeeting] = useState<CurrentMeeting | null>({ id: 'intro-call', title: '+ New Call' });
   const [isCollapsed, setIsCollapsed] = useState(true);
+  const sidebarResize=usePaneResize({storageKey:'meetily.sidebar.width',defaultValue:256,min:SIDEBAR_MIN_WIDTH,max:SIDEBAR_MAX_WIDTH,step:16,valueFromPointer:clientX=>clientX});
+  const sidebarWidth=isCollapsed?SIDEBAR_COLLAPSED_WIDTH:sidebarResize.value;
+  useEffect(()=>{try{const saved=window.localStorage.getItem('meetily.sidebar.collapsed');if(saved!==null)setIsCollapsed(saved==='true');}catch{}},[]);
   const [meetings, setMeetings] = useState<CurrentMeeting[]>([]);
   const [sidebarItems, setSidebarItems] = useState<SidebarItem[]>([]);
   const [isMeetingActive, setIsMeetingActive] = useState(false);
@@ -139,7 +148,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 
 
   const toggleCollapse = () => {
-    setIsCollapsed(!isCollapsed);
+    setIsCollapsed(previous=>{const next=!previous;try{window.localStorage.setItem('meetily.sidebar.collapsed',String(next));}catch{}return next;});
   };
 
   // Update current meeting when on home page
@@ -303,6 +312,8 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       sidebarItems,
       isCollapsed,
       toggleCollapse,
+      sidebarWidth,
+      sidebarResize,
       meetings,
       setMeetings,
       isMeetingActive,

@@ -1,6 +1,6 @@
 # KH workspace v2 execution plan
 
-Status: user approved all five shortlisted PR improvements plus folder browser v2; independent design review cleared2026-10-21 after normal-exit and STARTING protection clarification. Implementation in progress.
+Status: user approved all five shortlisted PR improvements plus folder browser v2; independent design review cleared2026-10-21 after normal-exit and STARTING protection clarification. Implementation complete in source; independent implementation review cleared after context race fixes. Exact-commit full CI and deferred GUI/audio remain pending.
 Baseline: personal origin/devtest `4f306989efb76d6943abe2429ba1299e31608c45`.
 Branch: `enhance/kh-workspace-v2` in separate `meetily-kh-workspace-v2` worktree.
 

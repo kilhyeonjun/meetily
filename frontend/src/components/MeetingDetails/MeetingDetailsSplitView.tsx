@@ -1,7 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { FileText, NotebookPen, Sparkles } from 'lucide-react';
+import { usePaneResize, writeStoredValue } from '@/hooks/usePaneResize';
+import { PaneResizeHandle } from '@/components/PaneResizeHandle';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 const STORAGE_KEY = 'meetily.meetingDetails.transcriptPaneRatio';
 const DEFAULT_RATIO = 0.3;
@@ -14,25 +16,6 @@ const TABS = [
   { value: 'notes' as const, label: 'Notes', icon: NotebookPen },
 ];
 const RIGHT_PANES = TABS.filter((tab) => tab.value !== 'transcript');
-
-function readStoredRatio(): number {
-  if (typeof window === 'undefined') return DEFAULT_RATIO;
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const n = raw == null ? NaN : Number(raw);
-    return Number.isFinite(n) && n >= MIN_RATIO && n <= MAX_RATIO ? n : DEFAULT_RATIO;
-  } catch {
-    return DEFAULT_RATIO;
-  }
-}
-
-function writeStoredRatio(value: number): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, String(value));
-  } catch {
-    // Layout persistence is optional.
-  }
-}
 
 export type MeetingDetailsTab = 'transcript' | 'summary' | 'notes';
 export type MeetingDetailsRightPane = Exclude<MeetingDetailsTab, 'transcript'>;
@@ -61,10 +44,11 @@ export function MeetingDetailsSplitView({
   onTabChange,
 }: MeetingDetailsSplitViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [ratio, setRatio] = useState(DEFAULT_RATIO);
+  const [collapsed,setCollapsed]=useState(false);
+  const setTranscriptCollapsed=(value:boolean)=>{setCollapsed(value);writeStoredValue('meetily.meetingDetails.transcriptPaneCollapsed',value?'1':'0');};
+  const resize=usePaneResize({storageKey:STORAGE_KEY,defaultValue:DEFAULT_RATIO,min:MIN_RATIO,max:MAX_RATIO,step:0.05,valueFromPointer:clientX=>{const rect=containerRef.current?.getBoundingClientRect();return rect&&rect.width>0?(clientX-rect.left)/rect.width:null;},collapseBelow:0.15,onCollapse:()=>setTranscriptCollapsed(true)});
+  const ratio=resize.value;
   const [isDesktop, setIsDesktop] = useState(true);
-  const dragging = useRef(false);
-  const clampRatio = (value: number) => Math.min(MAX_RATIO, Math.max(MIN_RATIO, value));
   const [lastRightPane, setLastRightPane] = useState<MeetingDetailsRightPane>('summary');
   useEffect(() => {
     if (activeTab !== 'transcript') setLastRightPane(activeTab);
@@ -76,9 +60,7 @@ export function MeetingDetailsSplitView({
   }, [activeTab]);
   const notesMounted = notesShown || activeTab === 'notes';
 
-  useEffect(() => {
-    setRatio(readStoredRatio());
-  }, []);
+  useEffect(()=>{try{setCollapsed(window.localStorage.getItem('meetily.meetingDetails.transcriptPaneCollapsed')==='1');}catch{}},[]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(min-width: 768px)');
@@ -87,41 +69,6 @@ export function MeetingDetailsSplitView({
     mediaQuery.addEventListener('change', updateLayout);
     return () => mediaQuery.removeEventListener('change', updateLayout);
   }, []);
-
-  const onPointerDown = useCallback((event: React.PointerEvent) => {
-    event.preventDefault();
-    dragging.current = true;
-    event.currentTarget.setPointerCapture(event.pointerId);
-  }, []);
-
-  const onPointerMove = useCallback((event: React.PointerEvent) => {
-    if (!dragging.current || !containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    setRatio(clampRatio((event.clientX - rect.left) / rect.width));
-  }, []);
-
-  const onPointerUp = useCallback(() => {
-    if (!dragging.current) return;
-    dragging.current = false;
-    setRatio((current) => {
-      writeStoredRatio(current);
-      return current;
-    });
-  }, []);
-
-  const onSeparatorKeyDown = useCallback((event: React.KeyboardEvent) => {
-    const current = ratio;
-    const next =
-      event.key === 'ArrowLeft' ? clampRatio(current - 0.05) :
-      event.key === 'ArrowRight' ? clampRatio(current + 0.05) :
-      event.key === 'Home' ? MIN_RATIO :
-      event.key === 'End' ? MAX_RATIO :
-      null;
-    if (next === null) return;
-    event.preventDefault();
-    setRatio(next);
-    writeStoredRatio(next);
-  }, [ratio]);
 
   const transcriptPanelProps = isDesktop
     ? { role: 'region' as const, 'aria-label': 'Transcript', tabIndex: -1 }
@@ -162,33 +109,17 @@ export function MeetingDetailsSplitView({
         ref={containerRef}
         className="flex flex-1 min-h-0 min-w-0 flex-col md:flex-row"
         style={{ '--transcript-pane-width': `${ratio * 100}%` } as CSSProperties}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
       >
         <TabsContent
           value="transcript"
+          style={isDesktop&&collapsed?{display:'none'}:undefined}
           forceMount
           className="mt-0 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden md:w-[var(--transcript-pane-width)] md:flex-none md:data-[state=inactive]:flex"
           {...transcriptPanelProps}
         >
           {transcript}
         </TabsContent>
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          aria-valuenow={Math.round(ratio * 100)}
-          aria-valuemin={Math.round(MIN_RATIO * 100)}
-          aria-valuemax={Math.round(MAX_RATIO * 100)}
-          aria-valuetext={`Transcript panel ${Math.round(ratio * 100)} percent`}
-          aria-label={rightPane === 'notes' ? 'Resize transcript and notes' : 'Resize transcript and summary'}
-          tabIndex={0}
-          className="group relative z-10 hidden w-2 flex-shrink-0 cursor-col-resize items-stretch justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset md:flex"
-          onPointerDown={onPointerDown}
-          onKeyDown={onSeparatorKeyDown}
-        >
-          <div className="h-full w-px bg-gray-200 transition-[width,background-color] duration-150 ease-out group-hover:w-1 group-hover:bg-blue-400 group-active:w-1 group-active:bg-blue-500" />
-        </div>
+        {(!isDesktop||!collapsed)&&<PaneResizeHandle handleProps={resize.handleProps} label={rightPane==='notes'?'Resize transcript and notes':'Resize transcript and summary'} valueNow={Math.round(ratio*100)} valueMin={30} valueMax={50} valueText={`Transcript panel ${Math.round(ratio*100)} percent`} className="relative hidden md:flex"/>}
         <div
           className={`${activeTab === 'transcript' ? 'hidden md:flex' : 'flex'} min-h-0 min-w-0 flex-1 flex-col overflow-hidden`}
         >
@@ -197,6 +128,7 @@ export function MeetingDetailsSplitView({
             aria-label="Summary or notes"
             className="hidden shrink-0 items-center justify-center gap-1 border-b border-gray-200 bg-white px-2 py-1.5 md:flex"
           >
+            <button type="button" className="rounded px-3 py-1 text-sm hover:bg-gray-100" aria-expanded={!collapsed} onClick={()=>setTranscriptCollapsed(!collapsed)}>{collapsed?'Show transcript':'Hide transcript'}</button>
             {RIGHT_PANES.map((pane) => {
               const Icon = pane.icon;
               const selected = rightPane === pane.value;

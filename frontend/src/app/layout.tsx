@@ -3,6 +3,7 @@
 import './globals.css'
 import { Source_Sans_3 } from 'next/font/google'
 import Sidebar from '@/components/Sidebar'
+import { WorkspaceProvider } from '@/components/Workspace/WorkspaceProvider'
 import { SidebarProvider } from '@/components/Sidebar/SidebarProvider'
 import MainContent from '@/components/MainContent'
 import AnalyticsProvider from '@/components/AnalyticsProvider'
@@ -75,6 +76,11 @@ export default function RootLayout({
   const [showDropOverlay, setShowDropOverlay] = useState(false)
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [importFilePath, setImportFilePath] = useState<string | null>(null)
+
+  useEffect(()=>{
+    const unlisten=listen('recording-quit-blocked',()=>toast.info('Recording is busy', {description:'Wait for recording startup, capture or final saving to finish before quitting.'}));
+    return()=>{void unlisten.then(stop=>stop());};
+  },[])
 
   // Disable context menu in production
   useEffect(() => {
@@ -218,6 +224,7 @@ export default function RootLayout({
                   <OnboardingProvider>
                     <UpdateCheckProvider>
                       <SidebarProvider>
+                        <WorkspaceProvider>
                         <TooltipProvider>
                           <RecordingPostProcessingProvider>
                             <ImportDialogProvider onOpen={handleOpenImportDialog}>
@@ -251,6 +258,7 @@ export default function RootLayout({
                             </ImportDialogProvider>
                           </RecordingPostProcessingProvider>
                         </TooltipProvider>
+                      </WorkspaceProvider>
                       </SidebarProvider>
                     </UpdateCheckProvider>
                   </OnboardingProvider>

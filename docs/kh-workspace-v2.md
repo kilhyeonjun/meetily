@@ -33,7 +33,7 @@ The prior notes integration retains PR849 attribution. No imported feature is re
 
 ## Verification and delivery
 
-- Independent design review cleared the persistence, draft, path and exit contracts in [the plan](plans/2026-10-21-workspace-v2.md). Implementation review and complete CI remain delivery requirements.
+- Independent design review cleared the persistence, draft, path and exit contracts in [the plan](plans/2026-10-21-workspace-v2.md). Independent implementation review cleared the native and frontend changes, including both context read/save response orderings and recovery-storage failure. Exact-commit full CI remains required.
 - Local standalone Rust tests cover shared close policy and real filesystem playback path boundaries; full Rust/arm64 verification runs in KH CI. Frontend suites run in isolated Bun processes.
 - The installed app is frozen for the user's2026-10-21 15:00 KST meeting. Do not install a build, restart it or change its settings/data as part of source delivery.
 - Actual WebView, microphone/system audio, mixed-language capture, saved audio timing and native close interactions remain pending until the user reports computer use is available. No screenshots or manual-test success are claimed.

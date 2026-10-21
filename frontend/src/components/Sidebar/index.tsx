@@ -1,10 +1,11 @@
 'use client';
 
-import { WorkspaceNav } from '@/components/Workspace/WorkspaceNav';
+import { WorkspaceTree } from '@/components/Workspace/WorkspaceTree';
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
-import { useSidebar } from './SidebarProvider';
+import { useSidebar, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH } from './SidebarProvider';
+import { PaneResizeHandle } from '../PaneResizeHandle';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
 import { ConfirmationModal } from '../ConfirmationModel/confirmation-modal';
 import { ModelConfig } from '@/components/ModelSettingsModal';
@@ -50,6 +51,8 @@ const Sidebar: React.FC = () => {
     sidebarItems,
     isCollapsed,
     toggleCollapse,
+    sidebarWidth,
+    sidebarResize,
     handleRecordingToggle,
     searchTranscripts,
     searchResults,
@@ -664,6 +667,7 @@ const Sidebar: React.FC = () => {
 
   return (
     <div className="fixed top-0 left-0 h-screen z-40">
+      {!isCollapsed&&<PaneResizeHandle handleProps={sidebarResize.handleProps} label="Resize sidebar" valueNow={sidebarResize.value} valueMin={SIDEBAR_MIN_WIDTH} valueMax={SIDEBAR_MAX_WIDTH} valueText={`Sidebar ${sidebarWidth} pixels wide`} className="absolute inset-y-0 -right-1 flex"/>}
       {/* Floating collapse button */}
       <button
         onClick={toggleCollapse}
@@ -678,8 +682,8 @@ const Sidebar: React.FC = () => {
       </button>
 
       <div
-        className={`h-screen bg-white border-r shadow-sm flex flex-col transition-all duration-300 ${isCollapsed ? 'w-16' : 'w-64'
-          }`}
+        style={{width:sidebarWidth}}
+        className="h-screen bg-white border-r shadow-sm flex flex-col"
       >
         {/*  Header with traffic light spacing */}
         <div className="flex-shrink-0 h-22 flex items-center">
@@ -738,7 +742,7 @@ const Sidebar: React.FC = () => {
           {/* Content area */}
           <div className="flex-1 flex flex-col min-h-0">
             {renderCollapsedIcons()}
-            {!isCollapsed && !searchQuery && <WorkspaceNav/>}
+            {!isCollapsed && !searchQuery && <WorkspaceTree/>}
             {/* Meeting Notes folder header - fixed */}
             {!isCollapsed && !!searchQuery && (
               <div className="flex-shrink-0">

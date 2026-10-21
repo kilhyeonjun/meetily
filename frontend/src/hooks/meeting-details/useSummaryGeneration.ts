@@ -11,6 +11,7 @@ import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import Analytics from '@/lib/analytics';
+import { prepareSummaryContext } from '@/services/summaryContextService';
 
 import {
   detectAndCacheSummaryLanguage,
@@ -331,6 +332,9 @@ export function useSummaryGeneration({
         return;
       }
 
+      const preparedContext = await prepareSummaryContext(meeting.id);
+      if (!mountedRef.current || visibleMeetingIdRef.current !== meeting.id || generationId !== generationIdRef.current) return;
+
       const timeSinceRecording = (Date.now() - new Date(meeting.created_at).getTime()) / 60000;
       trackedAttemptRef.current = {
         generationId,
@@ -368,9 +372,11 @@ export function useSummaryGeneration({
         meetingId: meeting.id,
         chunkSize: 40000,
         overlap: 1000,
-        customPrompt,
+        // null selects the persisted meeting context; an empty string is an explicit override.
+        customPrompt: customPrompt.trim() ? customPrompt : null,
         templateId: selectedTemplate,
         summaryLanguage,
+        ...preparedContext,
       });
       const processId = result.process_id;
       if (!mountedRef.current || visibleMeetingIdRef.current !== meeting.id) return;

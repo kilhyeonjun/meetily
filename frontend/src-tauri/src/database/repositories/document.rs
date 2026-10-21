@@ -21,6 +21,7 @@ pub struct DocumentInfo {
 pub struct Folder {
     pub id: String,
     pub name: String,
+    pub parent_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -129,22 +130,40 @@ impl DocumentsRepository {
     }
 
     pub async fn create_folder(pool: &SqlitePool, name: &str) -> Result<Folder, sqlx::Error> {
+        Self::create_folder_in(pool, name, None).await
+    }
+
+    pub async fn create_folder_in(
+        pool: &SqlitePool,
+        name: &str,
+        parent_id: Option<&str>,
+    ) -> Result<Folder, sqlx::Error> {
         if name.trim().is_empty() {
             return Err(invalid("Folder name cannot be empty"));
         }
         let id = format!("folder-{}", Uuid::new_v4());
         let now = Utc::now().to_rfc3339();
-        sqlx::query("INSERT INTO folders (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)")
+        let mut tx = pool.begin().await?;
+        if let Some(parent) = parent_id {
+            sqlx::query("SELECT id FROM folders WHERE id = ?")
+                .bind(parent)
+                .fetch_one(&mut *tx)
+                .await?;
+        }
+        sqlx::query("INSERT INTO folders (id, name, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
             .bind(&id)
             .bind(name.trim())
+            .bind(parent_id)
             .bind(&now)
             .bind(&now)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
-        sqlx::query_as("SELECT * FROM folders WHERE id = ?")
+        let folder = sqlx::query_as("SELECT * FROM folders WHERE id = ?")
             .bind(&id)
-            .fetch_one(pool)
-            .await
+            .fetch_one(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(folder)
     }
 
     pub async fn rename_folder(
@@ -172,10 +191,24 @@ impl DocumentsRepository {
 
     pub async fn remove_folder(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
         let mut tx = pool.begin().await?;
-        sqlx::query("SELECT id FROM folders WHERE id = ?")
+        // Take SQLite's writer lock before checking children, matching reparent.
+        let locked = sqlx::query("UPDATE folders SET updated_at = updated_at WHERE id = ?")
             .bind(id)
-            .fetch_one(&mut *tx)
+            .execute(&mut *tx)
             .await?;
+        if locked.rows_affected() == 0 {
+            return Err(sqlx::Error::RowNotFound);
+        }
+        let child: Option<(String,)> =
+            sqlx::query_as("SELECT id FROM folders WHERE parent_id = ? LIMIT 1")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if child.is_some() {
+            return Err(invalid(
+                "Folder has children; move children first before removing it",
+            ));
+        }
         sqlx::query("UPDATE meetings SET folder_id = NULL, updated_at = ? WHERE folder_id = ?")
             .bind(Utc::now().to_rfc3339())
             .bind(id)
@@ -186,6 +219,52 @@ impl DocumentsRepository {
             .execute(&mut *tx)
             .await?;
         tx.commit().await
+    }
+
+    pub async fn move_folder(
+        pool: &SqlitePool,
+        id: &str,
+        parent_id: Option<&str>,
+    ) -> Result<Folder, sqlx::Error> {
+        let mut tx = pool.begin().await?;
+        // A deferred transaction must acquire its write lock BEFORE ancestry is
+        // read, so concurrent inverse moves cannot both validate a stale tree.
+        let locked = sqlx::query("UPDATE folders SET updated_at = updated_at WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        if locked.rows_affected() == 0 {
+            return Err(sqlx::Error::RowNotFound);
+        }
+        if let Some(parent) = parent_id {
+            sqlx::query("SELECT id FROM folders WHERE id = ?")
+                .bind(parent)
+                .fetch_one(&mut *tx)
+                .await?;
+            let cycle: Option<(String,)> = sqlx::query_as(
+                "WITH RECURSIVE ancestors(id, parent_id) AS (
+                    SELECT id, parent_id FROM folders WHERE id = ?
+                    UNION SELECT f.id, f.parent_id FROM folders f JOIN ancestors a ON f.id = a.parent_id
+                 ) SELECT id FROM ancestors WHERE id = ? LIMIT 1"
+            ).bind(parent).bind(id).fetch_optional(&mut *tx).await?;
+            if cycle.is_some() {
+                return Err(invalid(
+                    "Cannot move a folder into itself or its descendants",
+                ));
+            }
+        }
+        sqlx::query("UPDATE folders SET parent_id = ?, updated_at = ? WHERE id = ?")
+            .bind(parent_id)
+            .bind(Utc::now().to_rfc3339())
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        let folder = sqlx::query_as("SELECT * FROM folders WHERE id = ?")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(folder)
     }
 
     pub async fn move_document(

@@ -35,6 +35,16 @@ pub use super::transcription::TranscriptUpdate;
 // GLOBAL STATE
 // ============================================================================
 
+#[path = "recording_activity.rs"]
+mod recording_activity;
+
+static IS_RECORDING_STARTING: AtomicBool = AtomicBool::new(false);
+
+/// All exit paths share this guard, including initialization and stop-tail I/O.
+pub fn is_recording_active() -> bool {
+    recording_activity::active(&IS_RECORDING_STARTING, &IS_RECORDING, &IS_RECORDING_STOPPING)
+}
+
 // Simple recording state tracking
 static IS_RECORDING: AtomicBool = AtomicBool::new(false);
 
@@ -313,12 +323,14 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         meeting_name.is_some()
     );
 
+    let _starting_guard = recording_activity::StartingGuard::acquire(&IS_RECORDING_STARTING)
+        .ok_or("Recording initialization already in progress")?;
     let engine_lifecycle_guard = super::common::acquire_engine_lifecycle_lock().await;
 
     // Check if already recording
     let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
     info!("🔍 IS_RECORDING state check: {}", current_recording_state);
-    if current_recording_state {
+    if current_recording_state || IS_RECORDING_STOPPING.load(Ordering::SeqCst) {
         return Err("Recording already in progress".to_string());
     }
 
@@ -518,12 +530,14 @@ pub async fn start_recording_with_target<R: Runtime>(
         meeting_name.is_some()
     );
 
+    let _starting_guard = recording_activity::StartingGuard::acquire(&IS_RECORDING_STARTING)
+        .ok_or("Recording initialization already in progress")?;
     let engine_lifecycle_guard = super::common::acquire_engine_lifecycle_lock().await;
 
     // Check if already recording
     let current_recording_state = IS_RECORDING.load(Ordering::SeqCst);
     info!("🔍 IS_RECORDING state check: {}", current_recording_state);
-    if current_recording_state {
+    if current_recording_state || IS_RECORDING_STOPPING.load(Ordering::SeqCst) {
         return Err("Recording already in progress".to_string());
     }
 

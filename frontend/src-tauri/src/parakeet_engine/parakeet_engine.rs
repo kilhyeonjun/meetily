@@ -552,7 +552,7 @@ impl ParakeetEngine {
             .map_err(|e| anyhow!("Parakeet transcription failed: {}", e))?;
 
 
-        Ok(result.text)
+        Ok(crate::substitutions::apply(&result.text))
     }
 
     /// Get the models directory path

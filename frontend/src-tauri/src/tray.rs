@@ -4,6 +4,59 @@ use tauri::{
     tray::TrayIconBuilder,
     AppHandle, Manager, Runtime,
 };
+use tauri_plugin_store::StoreExt;
+use crate::close_policy::{decide_exit, ExitAction, ExitEntry};
+
+const CLOSE_TO_TRAY_KEY: &str = "closeToTray";
+static CLOSE_PREFERENCE_SAVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub(crate) fn close_to_tray_enabled<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.store("store.json")
+        .map(|store| store.get(CLOSE_TO_TRAY_KEY).and_then(|value| value.as_bool()).unwrap_or(true))
+        .unwrap_or_else(|error| {
+            log::warn!("Cannot read close preference; keeping tray behavior: {}", error);
+            true
+        })
+}
+
+#[tauri::command]
+pub async fn get_close_to_tray<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
+    let store = app.store("store.json").map_err(|error| error.to_string())?;
+    Ok(store.get(CLOSE_TO_TRAY_KEY).and_then(|value| value.as_bool()).unwrap_or(true))
+}
+
+#[tauri::command]
+pub async fn set_close_to_tray<R: Runtime>(app: AppHandle<R>, enabled: bool) -> Result<(), String> {
+    let _lock = CLOSE_PREFERENCE_SAVE.lock().map_err(|error| error.to_string())?;
+    let store = app.store("store.json").map_err(|error| error.to_string())?;
+    let previous = store.get(CLOSE_TO_TRAY_KEY).and_then(|value| value.as_bool()).unwrap_or(true);
+    store.set(CLOSE_TO_TRAY_KEY, serde_json::Value::Bool(enabled));
+    if let Err(error) = store.save() {
+        store.set(CLOSE_TO_TRAY_KEY, serde_json::Value::Bool(previous));
+        return Err(format!("Failed to save close preference: {}", error));
+    }
+    Ok(())
+}
+
+pub(crate) fn quit_is_blocked() -> bool {
+    decide_exit(ExitEntry::ExplicitQuit, crate::audio::recording_commands::is_recording_active(), true)
+        == ExitAction::PreventQuit
+}
+
+pub(crate) fn notify_quit_blocked<R: Runtime>(app: &AppHandle<R>) {
+    log::warn!("Quit prevented: recording is starting, running or being saved");
+    focus_main_window(app);
+    let _ = app.emit("recording-quit-blocked", ());
+}
+
+/// Check before requesting programmatic exit, including its forced-exit fallback.
+pub(crate) fn request_quit<R: Runtime>(app: &AppHandle<R>) {
+    if quit_is_blocked() {
+        notify_quit_blocked(app);
+    } else {
+        app.exit(0);
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum RecordingState {
@@ -48,7 +101,7 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
             }
         }
         "check_updates" => check_updates_handler(app),
-        "quit" => app.exit(0),
+        "quit" => request_quit(app),
         _ => {}
     }
 }

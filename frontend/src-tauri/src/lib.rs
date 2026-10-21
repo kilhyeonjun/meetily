@@ -40,6 +40,7 @@ pub mod analytics;
 pub mod api;
 pub mod audio;
 pub mod config;
+mod close_policy;
 pub mod console_utils;
 pub mod database;
 pub mod notifications;
@@ -52,6 +53,7 @@ pub mod openrouter;
 pub mod parakeet_engine;
 pub mod state;
 pub mod summary;
+pub mod substitutions;
 pub mod tray;
 pub mod utils;
 pub mod whisper_engine;
@@ -707,6 +709,10 @@ pub fn run() {
             })
             .expect("Failed to initialize database");
 
+            if let Err(error) = substitutions::initialize(&_app.handle()) {
+                log::warn!("Vocabulary corrections unavailable at startup: {}", error);
+            }
+
             // Initialize bundled templates directory for dynamic template discovery
             log::info!("Initializing bundled templates directory...");
             if let Ok(resource_path) = _app.handle().path().resource_dir() {
@@ -723,10 +729,19 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     api.prevent_close();
-                    if let Err(e) = window.hide() {
-                        log::error!("Failed to hide main window on close request: {}", e);
-                    } else {
-                        log::info!("Main window hidden to tray on close request");
+                    let action = close_policy::decide_exit(
+                        close_policy::ExitEntry::WindowClose,
+                        audio::recording_commands::is_recording_active(),
+                        tray::close_to_tray_enabled(window.app_handle()),
+                    );
+                    match action {
+                        close_policy::ExitAction::Exit => tray::request_quit(window.app_handle()),
+                        close_policy::ExitAction::HideToTray => {
+                            if let Err(e) = window.hide() {
+                                log::error!("Failed to hide main window on close request: {}", e);
+                            }
+                        }
+                        close_policy::ExitAction::PreventQuit => tray::notify_quit_blocked(window.app_handle()),
                     }
                 }
             }
@@ -738,6 +753,7 @@ pub fn run() {
             is_recording,
             get_transcription_status,
             read_audio_file,
+            audio::playback::get_meeting_audio_path,
             save_transcript,
             analytics::commands::init_analytics,
             analytics::commands::disable_analytics,
@@ -860,6 +876,7 @@ pub fn run() {
             api::api_update_document,
             api::api_get_folders,
             api::api_create_folder,
+            api::api_move_folder,
             api::api_rename_folder,
             api::api_remove_folder,
             api::api_move_document,
@@ -883,6 +900,14 @@ pub fn run() {
             summary::commands::api_save_meeting_detected_summary_language,
             summary::commands::api_detect_transcript_summary_language,
             summary::commands::api_cancel_summary,
+            summary::context_commands::api_get_meeting_summary_context,
+            summary::context_commands::api_save_meeting_summary_context,
+            summary::context_commands::api_get_global_summary_context,
+            summary::context_commands::api_save_global_summary_context,
+            substitutions::substitutions_list,
+            substitutions::substitutions_save,
+            substitutions::substitutions_test,
+            substitutions::substitutions_file_path,
             // Template commands
             summary::template_commands::api_list_templates,
             summary::template_commands::api_get_template_details,
@@ -965,11 +990,19 @@ pub fn run() {
             audio::import::start_import_audio_command,
             audio::import::cancel_import_command,
             audio::import::is_import_in_progress_command,
+            tray::get_close_to_tray,
+            tray::set_close_to_tray,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app_handle, event| {
             match event {
+                tauri::RunEvent::ExitRequested { api, .. } => {
+                    if tray::quit_is_blocked() {
+                        api.prevent_exit();
+                        tray::notify_quit_blocked(_app_handle);
+                    }
+                }
                 #[cfg(target_os = "macos")]
                 tauri::RunEvent::Reopen { .. } => {
                     tray::focus_main_window(_app_handle);

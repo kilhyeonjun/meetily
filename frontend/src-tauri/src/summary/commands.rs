@@ -469,6 +469,7 @@ pub async fn api_process_transcript<R: Runtime>(
     _chunk_size: Option<i32>,
     _overlap: Option<i32>,
     custom_prompt: Option<String>,
+    use_inherited_context: Option<bool>,
     template_id: Option<String>,
     summary_language: Option<String>,
     _auth_token: Option<String>,
@@ -483,7 +484,11 @@ pub async fn api_process_transcript<R: Runtime>(
     );
 
     let pool = state.db_manager.pool().clone();
-    let final_prompt = custom_prompt.unwrap_or_else(|| "".to_string());
+    // Resolve before resetting any process: failed context reads must not start
+    // a summary with different context or overwrite the previous summary.
+    let final_prompt = crate::summary::context::resolve_for_run(
+        &pool, &m_id, custom_prompt.as_deref(), use_inherited_context,
+    ).await?;
     let final_template_id = template_id.unwrap_or_else(|| "daily_standup".to_string());
 
     // Normalise empty / whitespace-only to None so "" and null behave identically

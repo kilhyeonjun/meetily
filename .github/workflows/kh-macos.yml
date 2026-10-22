@@ -45,6 +45,12 @@ jobs:
       - name: Frontend behavioral suites
         working-directory: frontend
         run: node ../.github/scripts/run-frontend-tests.mjs "$RUNNER_TEMP/frontend-test-results.json"
+      - name: Install UI regression browser
+        working-directory: frontend
+        run: pnpm exec playwright install chromium
+      - name: Workspace UI regressions (in-memory fixture)
+        working-directory: frontend
+        run: pnpm test:workspace-ui --workers=2
       - name: TypeScript
         working-directory: frontend
         run: pnpm exec tsc --noEmit
@@ -87,4 +93,10 @@ jobs:
         with:
           name: frontend-test-timings-${{ github.sha }}
           path: ${{ runner.temp }}/frontend-test-results.json
+          retention-days: 1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: workspace-ui-evidence-${{ github.sha }}
+          path: frontend/test-results/workspace
           retention-days: 1

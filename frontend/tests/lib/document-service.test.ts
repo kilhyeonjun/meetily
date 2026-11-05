@@ -10,3 +10,14 @@ test('create document passes metadata without starting recording or loading a mo
 test('folder move and removal use logical commands without document deletion',async()=>{calls.length=0;await documentService.move('prepared',null);await documentService.removeFolder('folder');expect(calls).toEqual([['api_move_document',{documentId:'prepared',folderId:null}],['api_remove_folder',{folderId:'folder'}]]);});
 
 test('legacy transcript-only and summary-only meetings remain recorded with no path/session ID',()=>{for(const title of ['Legacy transcript','Legacy summary']){const legacy={...doc,title,folder_path:null,recording_session_id:null,has_recording:true};expect(isUnrecordedDocument(legacy)).toBe(false);expect(canRecordDocument(legacy)).toBe(false);}});
+
+test('properties commands pass ordered typed inputs and document ID', async () => {
+  calls.length = 0;
+  const properties = [{kind: 'url' as const, label: 'Notion', value: 'https://notion.so/meeting'}, {kind: 'text' as const, label: 'Owner', value: 'Team'}];
+  await documentService.getProperties('prepared');
+  await documentService.setProperties('prepared', properties);
+  expect(calls).toEqual([
+    ['api_get_document_properties', {documentId: 'prepared'}],
+    ['api_set_document_properties', {documentId: 'prepared', properties}],
+  ]);
+});

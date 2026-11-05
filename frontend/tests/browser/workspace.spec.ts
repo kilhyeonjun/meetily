@@ -151,3 +151,97 @@ test('keyboard menu navigation reaches a trapped dialog and Escape restores the 
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(trigger).toBeFocused();
 });
+
+test('document properties add, persist, edit, delete and undo with accessible controls', async ({page}) => {
+  await page.goto('/meeting-details?id=agenda');
+  const header = page.getByRole('banner', {name: 'Document properties'});
+  await expect(header.getByRole('button', {name: 'Add property', exact: true})).toBeEnabled();
+  await header.getByRole('button', {name: 'Add property', exact: true}).click();
+  const form = page.getByRole('form', {name: 'Add property', exact: true});
+  await form.getByRole('textbox', {name: 'Property value'}).fill('https://notion.so/meeting');
+  await form.getByRole('textbox', {name: 'Property label'}).fill('Notion');
+  await form.getByRole('textbox', {name: 'Property value'}).press('Enter');
+  await expect(header.getByRole('button', {name: 'notion.so', exact: true})).toBeVisible();
+  await page.reload();
+  await expect(header.getByRole('button', {name: 'notion.so', exact: true})).toBeVisible();
+  await header.getByRole('button', {name: 'Edit Notion', exact: true}).focus();
+  await header.getByRole('button', {name: 'Edit Notion', exact: true}).click();
+  const edit = page.getByRole('form', {name: 'Edit property', exact: true});
+  await edit.getByRole('textbox', {name: 'Property label'}).fill('Meeting page');
+  await edit.getByRole('textbox', {name: 'Property value'}).fill('https://team.notion.site/agenda');
+  await edit.getByRole('button', {name: 'Save property', exact: true}).click();
+  await expect(header.getByRole('button', {name: 'team.notion.site', exact: true})).toBeVisible();
+  await header.getByRole('button', {name: 'Delete Meeting page', exact: true}).focus();
+  await header.getByRole('button', {name: 'Delete Meeting page', exact: true}).click();
+  await expect(header.getByRole('button', {name: 'team.notion.site', exact: true})).toHaveCount(0);
+  await page.getByRole('button', {name: 'Undo', exact: true}).click();
+  await expect(header.getByRole('button', {name: 'team.notion.site', exact: true})).toBeVisible();
+  await page.reload();
+  await expect(header.getByRole('button', {name: 'team.notion.site', exact: true})).toBeVisible();
+});
+
+test('detail title autosaves and searchable folder picker shows full paths', async ({page}) => {
+  await page.goto('/meeting-details?id=agenda');
+  const title = page.getByRole('textbox', {name: 'Document title'});
+  await title.fill('Updated planning');
+  await title.press('Enter');
+  await expect(page.getByRole('status')).toContainText('Saved');
+  await page.getByRole('button', {name: 'Document folder'}).click();
+  await page.getByRole('combobox', {name: 'Search folders'}).fill('Weekly');
+  await page.getByRole('option', {name: '/Research/Weekly planning', exact: true}).click();
+  await expect(page.getByRole('button', {name: 'Document folder'})).toContainText('/Research/Weekly planning');
+  await page.reload();
+  await expect(title).toHaveValue('Updated planning');
+  await expect(page.getByRole('button', {name: 'Document folder'})).toContainText('/Research/Weekly planning');
+  await title.fill('');
+  await title.press('Tab');
+  await expect(page.getByRole('alert')).toContainText('Title cannot be empty');
+  await title.press('Escape');
+  await expect(title).toHaveValue('Updated planning');
+});
+
+test('property form validates URLs and Notion paste prefills label', async ({page}) => {
+  await page.goto('/meeting-details?id=agenda');
+  await page.getByRole('button', {name: 'Add property', exact: true}).click();
+  const form = page.getByRole('form', {name: 'Add property', exact: true});
+  const value = form.getByRole('textbox', {name: 'Property value'});
+  // Use a browser ClipboardEvent so the production paste handler receives DataTransfer.
+  await value.evaluate(element => {
+    const data = new DataTransfer(); data.setData('text', 'https://notion.so/meeting');
+    element.dispatchEvent(new ClipboardEvent('paste', {bubbles: true, clipboardData: data}));
+  });
+  await expect(form.getByRole('textbox', {name: 'Property label'})).toHaveValue('Notion');
+  await value.fill('javascript:alert(1)');
+  await value.press('Enter');
+  await expect(form.getByRole('alert')).toHaveText('Enter a valid HTTP or HTTPS URL.');
+  await form.getByRole('button', {name: 'Text', exact: true}).click();
+  await value.fill('Project owner');
+  await value.press('Enter');
+  await expect(page.getByText('Project owner', {exact: true})).toBeVisible();
+});
+
+test('captures light and dark properties header states', async ({page}) => {
+  await page.goto('/meeting-details?id=agenda');
+  const header = page.getByRole('banner', {name: 'Document properties'});
+  await expect(header.getByRole('button', {name: 'Add property', exact: true})).toBeEnabled();
+  for (const mode of ['light', 'dark']) {
+    await page.evaluate(mode => document.documentElement.classList.toggle('dark', mode === 'dark'), mode);
+    await header.screenshot({path: `/tmp/meetily-props-shots/${mode}-empty.png`});
+  }
+  for (const [label, url] of [['Notion', 'https://notion.so/meeting'], ['Project', 'https://example.com/project']]) {
+    await header.getByRole('button', {name: 'Add property', exact: true}).click();
+    const form = page.getByRole('form', {name: 'Add property', exact: true});
+    await form.getByRole('textbox', {name: 'Property label'}).fill(label);
+    await form.getByRole('textbox', {name: 'Property value'}).fill(url);
+    await form.getByRole('button', {name: 'Add property', exact: true}).click();
+    await expect(form).toHaveCount(0);
+  }
+  for (const mode of ['light', 'dark']) {
+    await page.evaluate(mode => document.documentElement.classList.toggle('dark', mode === 'dark'), mode);
+    await header.screenshot({path: `/tmp/meetily-props-shots/${mode}-two-links.png`});
+    await header.getByRole('button', {name: 'Add property', exact: true}).click();
+    await page.getByRole('textbox', {name: 'Property label'}).fill('Reference');
+    await page.screenshot({path: `/tmp/meetily-props-shots/${mode}-add-popover.png`});
+    await page.keyboard.press('Escape');
+  }
+});

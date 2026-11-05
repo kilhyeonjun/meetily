@@ -1,3 +1,4 @@
+import type { DocumentProperty, PropertyInput } from '../../src/services/documentService';
 // In-memory IPC boundary for repeatable UI tests. Never reads the installed app.
 const stamp = '2026-10-22T07:00:00Z';
 let folders = [
@@ -43,8 +44,28 @@ let documents: Array<{
     updated_at: stamp,
   },
 ];
+// Storage is scoped to each isolated Playwright browser context, not app data.
+const persisted = sessionStorage.getItem('workspace-fixture');
+if (persisted) ({folders, documents} = JSON.parse(persisted));
+let properties: Record<string, DocumentProperty[]> = JSON.parse(sessionStorage.getItem('workspace-properties') || '{}');
+function persist() {
+  sessionStorage.setItem('workspace-fixture', JSON.stringify({folders, documents}));
+  sessionStorage.setItem('workspace-properties', JSON.stringify(properties));
+}
 export async function invoke(command: string, args: Record<string, any> = {}) {
   switch (command) {
+    case 'api_get_document':
+      return { ...structuredClone(documents.find(doc => doc.id === args.documentId)), created_at: stamp, folder_path: null, recording_session_id: null, has_recording: false };
+    case 'api_get_document_properties':
+      return structuredClone(properties[args.documentId] ?? []);
+    case 'api_set_document_properties':
+      properties[args.documentId] = args.properties.map((property: PropertyInput, position: number) => ({
+        ...property, id: crypto.randomUUID(), meeting_id: args.documentId, position, created_at: stamp, updated_at: stamp,
+      }));
+      persist();
+      return structuredClone(properties[args.documentId]);
+    case 'open_external_url':
+      return;
     case 'api_get_folders':
       return structuredClone(folders);
     case 'api_get_documents':
@@ -72,13 +93,15 @@ export async function invoke(command: string, args: Record<string, any> = {}) {
       return;
     case 'api_update_document':
       documents = documents.map((doc) =>
-        doc.id === args.documentId ? { ...doc, title: args.title } : doc,
+        doc.id === args.documentId ? { ...doc, title: args.title, scheduled_at: args.scheduledAt } : doc,
       );
+      persist();
       return;
     case 'api_move_document':
       documents = documents.map((doc) =>
         doc.id === args.documentId ? { ...doc, folder_id: args.folderId } : doc,
       );
+      persist();
       return;
     case 'api_rename_folder':
       folders = folders.map((folder) =>
@@ -111,3 +134,5 @@ export const router = {
   },
 };
 export const useRouter = () => router;
+export const useSidebar = () => ({refetchMeetings: async () => {}});
+export const useRecordingState = () => ({isRecording: false});

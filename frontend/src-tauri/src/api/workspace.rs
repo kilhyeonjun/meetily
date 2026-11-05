@@ -1,4 +1,5 @@
 use crate::database::repositories::document::{DocumentInfo, DocumentsRepository, Folder};
+use crate::database::repositories::document_properties::{DocumentPropertiesRepository, DocumentProperty, PropertyInput};
 use crate::state::AppState;
 use tauri::{AppHandle, Emitter, Runtime, State};
 
@@ -145,6 +146,30 @@ pub async fn api_move_document<R: Runtime>(
     )
     .await
     .map_err(|e| e.to_string())?;
+    documents_changed(&app);
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn api_get_document_properties(
+    state: State<'_, AppState>,
+    document_id: String,
+) -> Result<Vec<DocumentProperty>, String> {
+    DocumentPropertiesRepository::list(state.db_manager.pool(), &document_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn api_set_document_properties<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    document_id: String,
+    properties: Vec<PropertyInput>,
+) -> Result<Vec<DocumentProperty>, String> {
+    let result = DocumentPropertiesRepository::replace(state.db_manager.pool(), &document_id, properties)
+        .await
+        .map_err(|e| e.to_string())?;
     documents_changed(&app);
     Ok(result)
 }

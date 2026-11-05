@@ -1,5 +1,6 @@
 pub mod meeting;
 pub mod document;
+pub mod document_properties;
 #[cfg(test)]
 mod folder_hierarchy_tests;
 pub mod meeting_notes;

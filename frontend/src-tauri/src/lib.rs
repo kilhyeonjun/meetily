@@ -874,6 +874,8 @@ pub fn run() {
             api::api_get_documents,
             api::api_get_document,
             api::api_update_document,
+            api::api_get_document_properties,
+            api::api_set_document_properties,
             api::api_get_folders,
             api::api_create_folder,
             api::api_move_folder,

@@ -162,21 +162,17 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       onRecordingStop(true);
     } catch (error) {
       console.error('Failed to stop recording:', error);
+      const message = error instanceof Error ? error.message : String(error);
       if (error instanceof Error) {
         console.error('Error details:', {
           message: error.message,
           name: error.name,
           stack: error.stack,
         });
-        if (error.message.includes('No recording in progress')) {
-          return;
-        }
-      } else if (typeof error === 'string' && error.includes('No recording in progress')) {
+      }
+      // Another Stop (tray, shortcut) owns this stop and its save; nothing to undo here.
+      if (message.includes('No recording in progress') || message.includes('already stopping')) {
         return;
-      } else if (error && typeof error === 'object' && 'toString' in error) {
-        if (error.toString().includes('No recording in progress')) {
-          return;
-        }
       }
       setIsProcessing(false);
       onRecordingStop(false);

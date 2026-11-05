@@ -15,13 +15,13 @@ pub(crate) async fn acquire_engine_lifecycle_lock() -> OwnedMutexGuard<()> {
 }
 
 /// Unload the transcription engine after a batch job (import or retranscription).
-/// Skips unloading if a live recording is currently in progress, since recording
-/// uses the same global engine instances.
+/// Skips unloading while a recording or a stopped recording's background transcription
+/// still uses the same global engine instances.
 pub(crate) async fn unload_engine_after_batch(use_parakeet: bool) {
     let _engine_lifecycle_guard = acquire_engine_lifecycle_lock().await;
 
-    if crate::audio::recording_commands::is_recording().await {
-        log::info!("Skipping model unload after batch: recording in progress");
+    if crate::audio::recording_commands::is_recording_active() {
+        log::info!("Skipping model unload: recording or background transcription in progress");
         return;
     }
 
@@ -44,6 +44,21 @@ pub(crate) async fn unload_engine_after_batch(use_parakeet: bool) {
             e.unload_model().await;
         }
     }
+}
+
+/// Unload the configured transcription engine once nothing uses it, e.g. after a stopped
+/// recording's background transcription has drained.
+pub(crate) async fn unload_engine_when_idle<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    use tauri::Manager;
+    let provider = match app.try_state::<crate::state::AppState>() {
+        Some(state) => crate::api::api::api_get_transcript_config(app.clone(), state, None)
+            .await
+            .ok()
+            .flatten()
+            .map(|config| config.provider),
+        None => None,
+    };
+    unload_engine_after_batch(provider.as_deref() == Some("parakeet")).await;
 }
 
 /// Create transcript segments from transcription results.

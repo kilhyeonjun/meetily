@@ -174,13 +174,66 @@ pub struct TranscriptUpdate {
     pub duration: f64,          // Segment duration in seconds (e.g., 3.3)
 }
 
+/// Results of one recording's transcription task.
+///
+/// While the recording is live, results go out as `transcript-update` events. Stop calls
+/// [`TranscriptionSession::detach`]: from then on results stay in the tail, so a stopped
+/// recording can finish in the background without reaching the UI of the next recording.
+/// Routing and detaching share one lock, so each result is either emitted or kept, never both.
+#[derive(Default)]
+pub struct TranscriptionSession {
+    routing: std::sync::Mutex<SessionRouting>,
+}
+
+#[derive(Default)]
+struct SessionRouting {
+    detached: bool,
+    tail: Vec<TranscriptUpdate>,
+}
+
+impl TranscriptionSession {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    fn routing(&self) -> std::sync::MutexGuard<'_, SessionRouting> {
+        self.routing.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn detach(&self) {
+        self.routing().detached = true;
+    }
+
+    pub fn is_detached(&self) -> bool {
+        self.routing().detached
+    }
+
+    /// Emits `update` with `emit` while live; keeps it for the tail once detached.
+    /// Returns false only when a live emit failed.
+    fn route(&self, update: TranscriptUpdate, emit: impl FnOnce(&TranscriptUpdate) -> bool) -> bool {
+        let mut routing = self.routing();
+        if routing.detached {
+            routing.tail.push(update);
+            true
+        } else {
+            emit(&update)
+        }
+    }
+
+    pub fn take_tail(&self) -> Vec<TranscriptUpdate> {
+        std::mem::take(&mut self.routing().tail)
+    }
+}
+
 // NOTE: get_transcript_history and get_recording_meeting_name functions
 // have been moved to recording_commands.rs where they have access to RECORDING_MANAGER
 
-/// Optimized parallel transcription task ensuring ZERO chunk loss
+/// Optimized parallel transcription task ensuring ZERO chunk loss.
+/// `session` decides whether results reach the live UI or the post-stop tail.
 pub fn start_transcription_task<R: Runtime>(
     app: AppHandle<R>,
     transcription_receiver: tokio::sync::mpsc::UnboundedReceiver<AudioChunk>,
+    session: Arc<TranscriptionSession>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         info!("Starting transcription worker task");
@@ -189,12 +242,14 @@ pub fn start_transcription_task<R: Runtime>(
             Ok(engine) => engine,
             Err(e) => {
                 error!("Failed to initialize transcription engine");
-                let _ = app.emit("transcription-error", serde_json::json!({
-                    "error": e,
-                    "userMessage": "Recording failed: Unable to initialize speech recognition. Please check your model settings.",
-                    "actionable": true,
-                    "phase": "active"
-                }));
+                if !session.is_detached() {
+                    let _ = app.emit("transcription-error", serde_json::json!({
+                        "error": e,
+                        "userMessage": "Recording failed: Unable to initialize speech recognition. Please check your model settings.",
+                        "actionable": true,
+                        "phase": "active"
+                    }));
+                }
                 return;
             }
         };
@@ -216,6 +271,7 @@ pub fn start_transcription_task<R: Runtime>(
             let work_receiver_clone = work_receiver.clone();
             let chunks_completed_clone = chunks_completed.clone();
             let chunks_queued_clone = chunks_queued.clone();
+            let session_clone = session.clone();
 
             worker_handles.push(tokio::spawn(async move {
                 let mut stats = WorkerLogStats::default();
@@ -236,10 +292,10 @@ pub fn start_transcription_task<R: Runtime>(
                     let chunk_duration = chunk.data.len() as f64 / chunk.sample_rate as f64;
                     let processing_started = Instant::now();
 
-                    if !engine_clone.is_model_loaded().await {
+                    if !model_ready(&engine_clone, &session_clone).await {
                         stats.record_failure(WorkerFailureCategory::ModelNotLoaded);
                     } else {
-                        match transcribe_chunk_with_provider(&engine_clone, chunk, &app_clone).await {
+                        match transcribe_chunk_with_provider(&engine_clone, chunk, &app_clone, &session_clone).await {
                             Ok((transcript, confidence_opt, is_partial)) => {
                                 if let Some(confidence) = confidence_opt {
                                     stats.confidence_total += confidence as f64;
@@ -247,7 +303,7 @@ pub fn start_transcription_task<R: Runtime>(
                                 }
 
                                 if should_emit_transcript(&transcript) {
-                                    if SPEECH_DETECTED_EMITTED
+                                    if !session_clone.is_detached() && SPEECH_DETECTED_EMITTED
                                         .compare_exchange(
                                             false,
                                             true,
@@ -282,15 +338,16 @@ pub fn start_transcription_task<R: Runtime>(
                                         duration: chunk_duration,
                                     };
 
-                                    if app_clone.emit("transcript-update", &update).is_ok() {
+                                    #[cfg(debug_assertions)]
+                                    let snippet = crate::utils::log_snippet(&update.text, 200);
+                                    let routed = session_clone.route(update, |update| {
+                                        app_clone.emit("transcript-update", update).is_ok()
+                                    });
+                                    if routed {
                                         stats.emitted += 1;
                                         #[cfg(debug_assertions)]
                                         if should_log_transcript_snippet(stats.emitted) {
-                                            debug!(
-                                                "accepted transcript result #{}: {}",
-                                                stats.emitted,
-                                                crate::utils::log_snippet(&update.text, 200)
-                                            );
+                                            debug!("accepted transcript result #{}: {}", stats.emitted, snippet);
                                         }
                                     } else {
                                         stats.record_failure(WorkerFailureCategory::TranscriptUpdateEmit);
@@ -308,13 +365,15 @@ pub fn start_transcription_task<R: Runtime>(
                             Err(error @ TranscriptionError::EngineFailed(_)) => {
                                 stats.record_failure(WorkerFailureCategory::EngineFailed);
                                 warn!("Transcription engine failed: {}", error);
-                                let _ =
-                                    app_clone.emit("transcription-warning", error.to_string());
+                                if !session_clone.is_detached() {
+                                    let _ = app_clone.emit("transcription-warning", error.to_string());
+                                }
                             }
                             Err(error @ TranscriptionError::UnsupportedLanguage(_)) => {
                                 stats.record_failure(WorkerFailureCategory::UnsupportedLanguage);
-                                let _ =
-                                    app_clone.emit("transcription-warning", error.to_string());
+                                if !session_clone.is_detached() {
+                                    let _ = app_clone.emit("transcription-warning", error.to_string());
+                                }
                             }
                         }
                     }
@@ -327,13 +386,15 @@ pub fn start_transcription_task<R: Runtime>(
                     } else {
                         100
                     };
-                    let _ = app_clone.emit("transcription-progress", serde_json::json!({
-                        "worker_id": worker_id,
-                        "chunks_completed": completed,
-                        "chunks_queued": queued,
-                        "progress_percentage": progress_percentage,
-                        "message": format!("Worker {} processing... ({}/{})", worker_id, completed, queued)
-                    }));
+                    if !session_clone.is_detached() {
+                        let _ = app_clone.emit("transcription-progress", serde_json::json!({
+                            "worker_id": worker_id,
+                            "chunks_completed": completed,
+                            "chunks_queued": queued,
+                            "progress_percentage": progress_percentage,
+                            "message": format!("Worker {} processing... ({}/{})", worker_id, completed, queued)
+                        }));
+                    }
 
                     if last_summary.elapsed() >= Duration::from_secs(60) {
                         emit_worker_log_snapshot(stats.snapshot_and_reset(), false);
@@ -356,10 +417,12 @@ pub fn start_transcription_task<R: Runtime>(
         drop(work_sender);
 
         let total_chunks_queued = chunks_queued.load(Ordering::SeqCst);
-        let _ = app.emit("transcription-queue-complete", serde_json::json!({
-            "total_chunks": total_chunks_queued,
-            "message": format!("{} chunks queued for processing - waiting for completion", total_chunks_queued)
-        }));
+        if !session.is_detached() {
+            let _ = app.emit("transcription-queue-complete", serde_json::json!({
+                "total_chunks": total_chunks_queued,
+                "message": format!("{} chunks queued for processing - waiting for completion", total_chunks_queued)
+            }));
+        }
 
         for handle in worker_handles {
             if handle.await.is_err() {
@@ -382,15 +445,17 @@ pub fn start_transcription_task<R: Runtime>(
                 "Transcription chunk loss detected queued={} completed={}",
                 final_queued, final_completed
             );
-            let _ = app.emit(
-                "transcript-chunk-loss-detected",
-                serde_json::json!({
-                    "chunks_queued": final_queued,
-                    "chunks_completed": final_completed,
-                    "chunks_lost": final_queued - final_completed,
-                    "message": "Some transcript chunks may have been lost during shutdown"
-                }),
-            );
+            if !session.is_detached() {
+                let _ = app.emit(
+                    "transcript-chunk-loss-detected",
+                    serde_json::json!({
+                        "chunks_queued": final_queued,
+                        "chunks_completed": final_completed,
+                        "chunks_lost": final_queued - final_completed,
+                        "message": "Some transcript chunks may have been lost during shutdown"
+                    }),
+                );
+            }
         }
 
         info!(
@@ -401,11 +466,12 @@ pub fn start_transcription_task<R: Runtime>(
 }
 
 /// Transcribe audio chunk using the appropriate provider (Whisper, Parakeet, or trait-based)
-/// Returns: (text, confidence Option, is_partial)
+/// Returns: (text, confidence Option, is_partial). Errors reach the UI only while the session is live.
 async fn transcribe_chunk_with_provider<R: Runtime>(
     engine: &TranscriptionEngine,
     chunk: AudioChunk,
     app: &AppHandle<R>,
+    session: &TranscriptionSession,
 ) -> std::result::Result<(String, Option<f32>, bool), TranscriptionError> {
     let speech_samples = if chunk.sample_rate != 16000 {
         crate::audio::audio_processing::resample_audio(&chunk.data, chunk.sample_rate, 16000)
@@ -420,71 +486,56 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
         });
     }
 
-    match engine {
+    let result = match engine {
         TranscriptionEngine::Whisper(whisper_engine) => {
             let language = crate::get_language_preference_internal();
-            match whisper_engine
+            whisper_engine
                 .transcribe_audio_with_confidence(speech_samples, language)
                 .await
-            {
-                Ok((text, confidence, is_partial)) => {
-                    Ok((text.trim().to_string(), Some(confidence), is_partial))
-                }
-                Err(error) => {
-                    let transcription_error = TranscriptionError::EngineFailed(error.to_string());
-                    let _ = app.emit(
-                        "transcription-error",
-                        &serde_json::json!({
-                            "error": transcription_error.to_string(),
-                            "userMessage": format!("Transcription failed: {}", transcription_error),
-                            "actionable": false,
-                            "phase": "active"
-                        }),
-                    );
-                    Err(transcription_error)
-                }
-            }
+                .map(|(text, confidence, is_partial)| (text.trim().to_string(), Some(confidence), is_partial))
+                .map_err(|error| TranscriptionError::EngineFailed(error.to_string()))
         }
-        TranscriptionEngine::Parakeet(parakeet_engine) => {
-            match parakeet_engine.transcribe_audio(speech_samples).await {
-                Ok(text) => Ok((text.trim().to_string(), None, false)),
-                Err(error) => {
-                    let transcription_error = TranscriptionError::EngineFailed(error.to_string());
-                    let _ = app.emit(
-                        "transcription-error",
-                        &serde_json::json!({
-                            "error": transcription_error.to_string(),
-                            "userMessage": format!("Transcription failed: {}", transcription_error),
-                            "actionable": false,
-                            "phase": "active"
-                        }),
-                    );
-                    Err(transcription_error)
-                }
-            }
-        }
+        TranscriptionEngine::Parakeet(parakeet_engine) => parakeet_engine
+            .transcribe_audio(speech_samples)
+            .await
+            .map(|text| (text.trim().to_string(), None, false))
+            .map_err(|error| TranscriptionError::EngineFailed(error.to_string())),
         TranscriptionEngine::Provider(provider) => {
             let language = crate::get_language_preference_internal();
-            match provider.transcribe(speech_samples, language).await {
-                Ok(result) => Ok((
-                    result.text.trim().to_string(),
-                    result.confidence,
-                    result.is_partial,
-                )),
-                Err(error) => {
-                    let _ = app.emit(
-                        "transcription-error",
-                        &serde_json::json!({
-                            "error": error.to_string(),
-                            "userMessage": format!("Transcription failed: {}", error),
-                            "actionable": false,
-                            "phase": "active"
-                        }),
-                    );
-                    Err(error)
-                }
-            }
+            provider
+                .transcribe(speech_samples, language)
+                .await
+                .map(|result| (result.text.trim().to_string(), result.confidence, result.is_partial))
         }
+    };
+
+    if let (Err(error), false) = (&result, session.is_detached()) {
+        let _ = app.emit(
+            "transcription-error",
+            &serde_json::json!({
+                "error": error.to_string(),
+                "userMessage": format!("Transcription failed: {}", error),
+                "actionable": false,
+                "phase": "active"
+            }),
+        );
+    }
+    result
+}
+
+/// While live, a missing model fails the chunk as before. A stopped recording finishing in the
+/// background waits instead: the next recording may be reloading the model they share.
+async fn model_ready(engine: &TranscriptionEngine, session: &TranscriptionSession) -> bool {
+    const RELOAD_WAIT: Duration = Duration::from_secs(120);
+    let deadline = Instant::now() + RELOAD_WAIT;
+    loop {
+        if engine.is_model_loaded().await {
+            return true;
+        }
+        if !session.is_detached() || Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
 
@@ -559,5 +610,36 @@ fn format_recording_time(seconds: f64) -> String {
             assert_eq!(stats.unsupported_language_failures, 0);
             assert_eq!(stats.speech_detected_emit_failures, 0);
             assert_eq!(stats.transcript_update_emit_failures, 0);
+        }
+
+        fn update(sequence_id: u64) -> TranscriptUpdate {
+            TranscriptUpdate {
+                text: format!("segment {sequence_id}"),
+                timestamp: "10:00:00".into(),
+                source: "Audio".into(),
+                sequence_id,
+                chunk_start_time: 0.0,
+                is_partial: false,
+                confidence: 0.9,
+                audio_start_time: sequence_id as f64,
+                audio_end_time: sequence_id as f64 + 1.0,
+                duration: 1.0,
+            }
+        }
+
+        #[test]
+        fn session_emits_until_detached_then_keeps_results_for_the_tail() {
+            let session = TranscriptionSession::new();
+            let mut emitted = Vec::new();
+            assert!(session.route(update(1), |u| { emitted.push(u.sequence_id); true }));
+            assert!(!session.route(update(2), |_| false), "a failed live emit is reported");
+
+            session.detach();
+            assert!(session.route(update(3), |_| panic!("detached results must not reach the UI")));
+
+            assert_eq!(emitted, vec![1]);
+            let tail: Vec<u64> = session.take_tail().iter().map(|u| u.sequence_id).collect();
+            assert_eq!(tail, vec![3]);
+            assert!(session.take_tail().is_empty(), "the tail is handed over once");
         }
     }

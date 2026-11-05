@@ -2,7 +2,9 @@
 
 import React, { useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';
+import { toast } from 'sonner';
 import { useRecordingStop } from '@/hooks/useRecordingStop';
+import type { RecordingTranscriptsFinalizedPayload } from '@/services/recordingService';
 
 /**
  * RecordingPostProcessingProvider
@@ -56,6 +58,20 @@ export function RecordingPostProcessingProvider({ children }: { children: React.
       }
     };
   }, [handleRecordingStop]);
+
+  // Late segments of a stopped recording reach the meeting after it was saved.
+  useEffect(() => {
+    const unlisten = listen<RecordingTranscriptsFinalizedPayload>('recording-transcripts-finalized', (event) => {
+      if (event.payload.meeting_id && event.payload.added_segments > 0) {
+        toast.success('Transcript completed', {
+          description: `${event.payload.added_segments} more segments were added to the stopped recording.`,
+        });
+      }
+    });
+    return () => {
+      void unlisten.then(fn => fn());
+    };
+  }, []);
 
   return <>{children}</>;
 }

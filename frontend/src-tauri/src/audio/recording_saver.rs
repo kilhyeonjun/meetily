@@ -27,6 +27,55 @@ pub fn read_recording_identity(folder: &std::path::Path) -> Result<Option<Record
     }
 }
 
+/// Append segments transcribed after Stop to `transcripts.json`, skipping sequence ids already
+/// present. Returns how many were added.
+pub fn append_transcript_segments(folder: &std::path::Path, tail: &[TranscriptSegment]) -> Result<usize> {
+    let path = folder.join("transcripts.json");
+    let mut segments: Vec<TranscriptSegment> = match std::fs::read(&path) {
+        Ok(bytes) => {
+            let mut file: serde_json::Value = serde_json::from_slice(&bytes)?;
+            match file.get_mut("segments") {
+                Some(segments) => serde_json::from_value(segments.take())?,
+                None => Vec::new(),
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let known: std::collections::HashSet<u64> = segments.iter().map(|s| s.sequence_id).collect();
+    let before = segments.len();
+    segments.extend(tail.iter().filter(|s| !known.contains(&s.sequence_id)).cloned());
+    let added = segments.len() - before;
+    segments.sort_by(|a, b| a.audio_start_time.total_cmp(&b.audio_start_time));
+    write_transcripts_file(folder, &segments)?;
+    Ok(added)
+}
+
+/// Atomically replace `transcripts.json` (temp file + rename).
+fn write_transcripts_file(folder: &std::path::Path, segments: &[TranscriptSegment]) -> Result<()> {
+    let transcript_path = folder.join("transcripts.json");
+    let temp_path = folder.join(".transcripts.json.tmp");
+    let json = serde_json::json!({
+        "version": "1.0",
+        "segments": segments,
+        "last_updated": chrono::Utc::now().to_rfc3339(),
+        "total_segments": segments.len()
+    });
+    let json_string = serde_json::to_string_pretty(&json).map_err(|e| {
+        error!("Failed to serialize transcripts to JSON: {}", e);
+        anyhow::anyhow!("JSON serialization failed: {}", e)
+    })?;
+    std::fs::write(&temp_path, &json_string).map_err(|e| {
+        error!("Failed to write transcript temp file");
+        anyhow::anyhow!("Failed to write temp file: {}", e)
+    })?;
+    std::fs::rename(&temp_path, &transcript_path).map_err(|e| {
+        error!("Failed to replace transcript file");
+        anyhow::anyhow!("Failed to rename transcript file: {}", e)
+    })?;
+    Ok(())
+}
+
 use super::audio_processing::create_meeting_folder;
 use super::incremental_saver::IncrementalAudioSaver;
 use super::recording_state::AudioChunk;
@@ -358,40 +407,7 @@ impl RecordingSaver {
             segments_clone.len()
         );
 
-        let transcript_path = folder.join("transcripts.json");
-        let temp_path = folder.join(".transcripts.json.tmp");
-
-        // Create JSON structure
-        let json = serde_json::json!({
-            "version": "1.0",
-            "segments": segments_clone,
-            "last_updated": chrono::Utc::now().to_rfc3339(),
-            "total_segments": segments_clone.len()
-        });
-
-        // Serialize to pretty JSON string
-        let json_string = serde_json::to_string_pretty(&json).map_err(|e| {
-            error!("Failed to serialize transcripts to JSON: {}", e);
-            anyhow::anyhow!("JSON serialization failed: {}", e)
-        })?;
-
-        // Write to temp file with error handling
-        std::fs::write(&temp_path, &json_string).map_err(|e| {
-            error!("Failed to write transcript temp file");
-            anyhow::anyhow!("Failed to write temp file: {}", e)
-        })?;
-
-        // Verify temp file was written correctly
-        if !temp_path.exists() {
-            error!("Temp transcript file does not exist after write");
-            return Err(anyhow::anyhow!("Temp file verification failed"));
-        }
-
-        // Atomic rename
-        std::fs::rename(&temp_path, &transcript_path).map_err(|e| {
-            error!("Failed to replace transcript file");
-            anyhow::anyhow!("Failed to rename transcript file: {}", e)
-        })?;
+        write_transcripts_file(folder, &segments_clone)?;
 
         info!(
             "✅ Successfully wrote transcripts.json with {} segments",
@@ -591,5 +607,44 @@ mod identity_tests {
         let identity = read_recording_identity(folder.path()).unwrap().unwrap();
         assert_eq!(identity.meeting_id, None);
         assert_eq!(identity.recording_session_id, None);
+    }
+
+    fn segment(sequence_id: u64, start: f64) -> TranscriptSegment {
+        TranscriptSegment {
+            id: format!("seg_{sequence_id}"),
+            text: format!("text {sequence_id}"),
+            audio_start_time: start,
+            audio_end_time: start + 1.0,
+            duration: 1.0,
+            display_time: "10:00:00".into(),
+            confidence: 0.9,
+            sequence_id,
+        }
+    }
+
+    #[test]
+    fn late_segments_merge_into_transcripts_json_once_and_in_audio_order() {
+        let folder = tempfile::tempdir().unwrap();
+        write_transcripts_file(folder.path(), &[segment(1, 1.0), segment(3, 30.0)]).unwrap();
+
+        assert_eq!(append_transcript_segments(folder.path(), &[segment(3, 30.0), segment(2, 20.0)]).unwrap(), 1);
+
+        let file: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(folder.path().join("transcripts.json")).unwrap()).unwrap();
+        let order: Vec<u64> = file["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["sequence_id"].as_u64().unwrap())
+            .collect();
+        assert_eq!(order, [1, 2, 3]);
+        assert_eq!(file["total_segments"], 3);
+    }
+
+    #[test]
+    fn late_segments_create_transcripts_json_when_none_was_written() {
+        let folder = tempfile::tempdir().unwrap();
+        assert_eq!(append_transcript_segments(folder.path(), &[segment(7, 70.0)]).unwrap(), 1);
+        assert!(folder.path().join("transcripts.json").exists());
     }
 }

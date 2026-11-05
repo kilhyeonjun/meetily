@@ -78,10 +78,28 @@ export function useRecordingStop(
   // Promise to track recording-stopped event data (fixes race condition with recording-stop-complete)
   const stoppedIdentityRef = useRef<RecordingStoppedPayload | null>(null);
   const recordingStoppedDataRef = useRef<Promise<void> | null>(null);
+  const statusRef = useRef(status);
+  useEffect(() => {
+    statusRef.current = status;
+  });
+
+  // Native stop emits `recording-stopped` after its last live transcript event, so once the
+  // identity is here the transcript buffer holds everything this meeting gets right now.
+  const waitForStoppedIdentity = useCallback(async (timeoutMs = 5000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (!stoppedIdentityRef.current && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    if (recordingStoppedDataRef.current) {
+      await recordingStoppedDataRef.current;
+    }
+    return stoppedIdentityRef.current;
+  }, []);
 
   // Set up recording-stopped listener for meeting navigation
   useEffect(() => {
     let unlistenFn: (() => void) | undefined;
+    let unlistenStartedFn: (() => void) | undefined;
 
     const setupRecordingStoppedListener = async () => {
       try {
@@ -107,6 +125,12 @@ export function useRecordingStop(
           })();
 
         });
+        // A new recording invalidates the previous stop's identity: the save no longer waits
+        // long enough for a stale one to be overwritten before it is read.
+        unlistenStartedFn = await listen('recording-started', () => {
+          stoppedIdentityRef.current = null;
+          recordingStoppedDataRef.current = null;
+        });
         console.log('Recording stopped listener setup complete');
       } catch (error) {
         console.error('Failed to setup recording stopped listener:', error);
@@ -120,6 +144,7 @@ export function useRecordingStop(
       if (unlistenFn) {
         unlistenFn();
       }
+      unlistenStartedFn?.();
     };
   }, [router]);
 
@@ -151,95 +176,31 @@ export function useRecordingStop(
       // This function only handles post-stop processing (transcription wait, API call, navigation)
       console.log('Recording already stopped by RecordingControls, processing transcription...');
 
-      // Wait for transcription to complete
-      setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Waiting for transcription...');
-      console.log('Waiting for transcription to complete...');
-
-      const MAX_WAIT_TIME = 60000; // 60 seconds maximum wait (increased for longer processing)
-      const POLL_INTERVAL = 500; // Check every 500ms
-      let elapsedTime = 0;
-      let transcriptionComplete = false;
-
-      // Listen for transcription-complete event
-      const unlistenComplete = await listen('transcription-complete', () => {
-        console.log('Received transcription-complete event');
-        transcriptionComplete = true;
-      });
-
-      // Poll for transcription status
-      while (elapsedTime < MAX_WAIT_TIME && !transcriptionComplete) {
-        try {
-          const status = await transcriptService.getTranscriptionStatus();
-          console.log('Transcription status:', status);
-
-          // Check if transcription is complete
-          if (!status.is_processing && status.chunks_in_queue === 0) {
-            console.log('Transcription complete - no active processing and no chunks in queue');
-            transcriptionComplete = true;
-            break;
-          }
-
-          // If no activity for more than 8 seconds and no chunks in queue, consider it done (increased from 5s to 8s)
-          if (status.last_activity_ms > 8000 && status.chunks_in_queue === 0) {
-            console.log('Transcription likely complete - no recent activity and empty queue');
-            transcriptionComplete = true;
-            break;
-          }
-
-          // Update user with current status
-          if (status.chunks_in_queue > 0) {
-            console.log(`Processing ${status.chunks_in_queue} remaining audio chunks...`);
-            setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, `Processing ${status.chunks_in_queue} remaining chunks...`);
-          }
-
-          // Wait before next check
-          await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
-          elapsedTime += POLL_INTERVAL;
-        } catch (error) {
-          console.error('Error checking transcription status:', error);
-          break;
-        }
-      }
-
-      // Clean up listener
-      console.log('🧹 CLEANUP: Cleaning up transcription-complete listener');
-      unlistenComplete();
-
-      if (!transcriptionComplete && elapsedTime >= MAX_WAIT_TIME) {
-        console.warn('⏰ Transcription wait timeout reached after', elapsedTime, 'ms');
-      } else {
-        console.log('✅ Transcription completed after', elapsedTime, 'ms');
-        // Wait longer for any late transcript segments (increased from 1s to 4s)
-        console.log('⏳ Waiting for late transcript segments...');
-        await new Promise(resolve => setTimeout(resolve, 4000));
-      }
-
-      // Final buffer flush: process ALL remaining transcripts regardless of timing
-      const flushStartTime = Date.now();
-      console.log('🔄 Final buffer flush: forcing processing of any remaining transcripts...', {
-        flush_started_at: new Date(flushStartTime).toISOString(),
-        time_since_stop: flushStartTime - stopStartTime,
-        current_transcript_count: transcriptsRef.current.length
-      });
-      setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Flushing transcript buffer...');
+      // Audio still queued for transcription is finished in the background by the native side
+      // and appended to the saved meeting, so the meeting is saved now instead of waiting.
+      setStatus(RecordingStatus.PROCESSING_TRANSCRIPTS, 'Finishing transcript...');
+      const nativeIdentity = await waitForStoppedIdentity();
       flushBuffer();
-      const flushEndTime = Date.now();
-      console.log('✅ Final buffer flush completed', {
-        flush_duration: flushEndTime - flushStartTime,
-        total_time_since_stop: flushEndTime - stopStartTime,
-        final_transcript_count: transcriptsRef.current.length
+      // Let React apply the flushed transcript state before reading it.
+      await new Promise(resolve => setTimeout(resolve, 300));
+      console.log('Transcript ready to save', {
+        time_since_stop: Date.now() - stopStartTime,
+        transcript_count: transcriptsRef.current.length,
+        background_transcription: nativeIdentity?.background_transcription ?? false,
       });
 
-      // NOTE: Status remains PROCESSING_TRANSCRIPTS until we start saving
+      const recoveryId=storedRecordingId();
+      const recoveryMetadata=recoveryId?await indexedDBService.getMeetingMetadata(recoveryId):null;
+      const targetMeetingId=nativeIdentity?.meeting_id??recoveryMetadata?.targetMeetingId;
+      const recordingSessionId=nativeIdentity?.recording_session_id??recoveryMetadata?.recordingSessionId;
 
-      // Wait a bit more to ensure all transcript state updates have been processed
-      console.log('Waiting for transcript state updates to complete...');
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Without the native session there is nothing to attach the late transcript to, and a
+      // save would create a second meeting (a repeated Stop used to do exactly that).
+      if (isCallApi && !recordingSessionId) {
+        console.warn('Recording stopped without a native session; transcript stays in recovery');
+      }
 
-      // Save to SQLite
-      // NOTE: enabled to save COMPLETE transcripts after frontend receives all updates
-      // This ensures user sees all transcripts streaming in before database save
-      if (isCallApi && transcriptionComplete == true) {
+      if (isCallApi && recordingSessionId) {
 
         setStatus(RecordingStatus.SAVING, 'Saving meeting to database...');
 
@@ -249,11 +210,6 @@ export function useRecordingStop(
         // Get folder_path and meeting_name from recording-stopped event
         const folderPath = sessionStorage.getItem('last_recording_folder_path');
         const savedMeetingName = sessionStorage.getItem('last_recording_meeting_name');
-        const recoveryId=storedRecordingId();
-        const recoveryMetadata=recoveryId?await indexedDBService.getMeetingMetadata(recoveryId):null;
-        const nativeIdentity=stoppedIdentityRef.current;
-        const targetMeetingId=nativeIdentity?.meeting_id??recoveryMetadata?.targetMeetingId;
-        const recordingSessionId=nativeIdentity?.recording_session_id??recoveryMetadata?.recordingSessionId;
 
         console.log('💾 Saving COMPLETE transcripts to database...', {
           transcript_count: freshTranscripts.length,
@@ -341,7 +297,9 @@ export function useRecordingStop(
 
           // Show success toast with navigation option
           toast.success('Recording saved successfully!', {
-            description: `${freshTranscripts.length} transcript segments saved.`,
+            description: nativeIdentity?.background_transcription
+              ? `${freshTranscripts.length} transcript segments saved. The rest of the audio is still being transcribed and will be added automatically.`
+              : `${freshTranscripts.length} transcript segments saved.`,
             action: {
               label: 'View Meeting',
               onClick: () => {
@@ -352,8 +310,10 @@ export function useRecordingStop(
             duration: 10000,
           });
 
-          // Auto-navigate after a short delay with source parameter
+          // Auto-navigate after a short delay with source parameter, unless the user already
+          // started the next recording (its live transcript must not be cleared).
           setTimeout(() => {
+            if (statusRef.current !== RecordingStatus.COMPLETED) return;
             router.push(`/meeting-details?id=${meetingId}&source=recording`);
             clearTranscripts()
             Analytics.trackPageView('meeting_details');
@@ -458,6 +418,7 @@ export function useRecordingStop(
     meetings,
     setIsMeetingActive,
     router,
+    waitForStoppedIdentity,
   ]);
 
   // Expose handleRecordingStop function to window for Rust callbacks

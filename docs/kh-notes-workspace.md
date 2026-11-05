@@ -30,6 +30,14 @@ Manual notes are stored separately from generated summaries. A recording
 session can be recovered or retried without creating a second meeting.
 This MVP supports one recording attachment per prepared meeting.
 
+**Stop Recording** returns once the audio is saved; it does not wait for
+speech recognition to catch up, so the next recording can start right away.
+Audio still queued for transcription is finished in the background and its
+segments are added to the saved meeting (and its `transcripts.json`). While
+that runs, the meeting page shows "Transcribing the rest of this recording…",
+auto-summary waits for it, retranscription is refused, and quitting the app is
+blocked.
+
 ## Persistence
 
 Notes, document metadata and logical folder membership live in local SQLite.

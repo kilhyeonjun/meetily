@@ -24,6 +24,14 @@ export interface RecordingStoppedPayload {
   meeting_name?: string;
   meeting_id?: string | null;
   recording_session_id?: string | null;
+  /** Queued audio is still being transcribed; the rest arrives via `recording-transcripts-finalized`. */
+  background_transcription?: boolean;
+}
+
+export interface RecordingTranscriptsFinalizedPayload {
+  recording_session_id: string | null;
+  meeting_id: string | null;
+  added_segments: number;
 }
 
 // Bound the start invoke: > ~40s Bluetooth mic cold-start and ~90s worst-case

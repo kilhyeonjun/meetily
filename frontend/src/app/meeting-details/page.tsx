@@ -6,6 +6,8 @@ import PageContent from "./page-content";
 import { useRouter, useSearchParams } from "next/navigation";
 import Analytics from "@/lib/analytics";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import type { RecordingTranscriptsFinalizedPayload } from "@/services/recordingService";
 import { LoaderIcon } from "lucide-react";
 import { useConfig } from "@/contexts/ConfigContext";
 import { usePaginatedTranscripts } from "@/hooks/usePaginatedTranscripts";
@@ -36,6 +38,8 @@ function RecordedMeetingDetailsContent() {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [shouldAutoGenerate, setShouldAutoGenerate] = useState<boolean>(false);
+  // The recording stopped with audio still queued; its last segments are added in the background.
+  const [transcriptionPending, setTranscriptionPending] = useState<boolean>(false);
   const [hasCheckedAutoGen, setHasCheckedAutoGen] = useState<boolean>(false);
 
   // Use pagination hook for efficient transcript loading
@@ -52,6 +56,29 @@ function RecordedMeetingDetailsContent() {
     refetch,
     error: transcriptError,
   } = usePaginatedTranscripts({ meetingId: meetingId || '' });
+
+  useEffect(() => {
+    if (!meetingId) {
+      setTranscriptionPending(false);
+      return;
+    }
+    let cancelled = false;
+    const checkPending = () => invoke<boolean>('is_background_transcription_pending', { meetingId })
+      .then(pending => { if (!cancelled) setTranscriptionPending(pending); })
+      .catch(error => console.warn('Could not check background transcription:', error));
+    void checkPending();
+    const unlisten = listen<RecordingTranscriptsFinalizedPayload>('recording-transcripts-finalized', (event) => {
+      if (cancelled) return;
+      void checkPending();
+      if (event.payload.meeting_id === meetingId && event.payload.added_segments > 0) {
+        void refetch();
+      }
+    });
+    return () => {
+      cancelled = true;
+      void unlisten.then(fn => fn());
+    };
+  }, [meetingId, refetch]);
 
   // Check if gemma3:1b model is available in Ollama
   const checkForGemmaModel = useCallback(async (): Promise<boolean> => {
@@ -273,28 +300,37 @@ function RecordedMeetingDetailsContent() {
     </div>;
   }
 
-  return <PageContent
-    key={meetingId}
-    initialSummary={summaryResponse}
-    meeting={meetingDetails}
-    summaryData={meetingSummary}
-    shouldAutoGenerate={shouldAutoGenerate}
-    onAutoGenerateComplete={() => setShouldAutoGenerate(false)}
-    onMeetingUpdated={async () => {
-      // Refetch meeting details to get updated title from backend
-      await fetchMeetingDetails();
-      // Refetch meetings list to update sidebar
-      await refetchMeetings();
-    }}
-    onRefetchTranscripts={refetch}
-    // Pagination props for efficient transcript loading
-    segments={segments}
-    hasMore={hasMore}
-    isLoadingMore={isLoadingMore}
-    totalCount={totalCount}
-    loadedCount={loadedCount}
-    onLoadMore={loadMore}
-  />;
+  return <>
+    <PageContent
+      key={meetingId}
+      initialSummary={summaryResponse}
+      meeting={meetingDetails}
+      summaryData={meetingSummary}
+      // Summarize the whole recording, not the part transcribed before Stop.
+      shouldAutoGenerate={shouldAutoGenerate && !transcriptionPending}
+      onAutoGenerateComplete={() => setShouldAutoGenerate(false)}
+      onMeetingUpdated={async () => {
+        // Refetch meeting details to get updated title from backend
+        await fetchMeetingDetails();
+        // Refetch meetings list to update sidebar
+        await refetchMeetings();
+      }}
+      onRefetchTranscripts={refetch}
+      // Pagination props for efficient transcript loading
+      segments={segments}
+      hasMore={hasMore}
+      isLoadingMore={isLoadingMore}
+      totalCount={totalCount}
+      loadedCount={loadedCount}
+      onLoadMore={loadMore}
+    />
+    {transcriptionPending && (
+      <div role="status" className="fixed bottom-4 right-4 z-50 flex items-center gap-2 rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-600 shadow-sm">
+        <LoaderIcon className="size-4 animate-spin" />
+        Transcribing the rest of this recording…
+      </div>
+    )}
+  </>;
 }
 
 function MeetingDetailsContent() {

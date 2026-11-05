@@ -137,8 +137,9 @@ impl TruePeakLimiter {
 }
 
 /// Stateful microphone gain using EBU R128 loudness.
-/// The gain target is measured only on input whose recent level passed the guard,
-/// so quiet background never lowers the measured level. Samples are never gated.
+/// The gain target is measured only on input whose recent 400 ms level passed the guard
+/// (including up to ~400 ms of release after louder input), so settled quiet background
+/// does not lower the measured level. Samples are never gated.
 pub struct LoudnessNormalizer {
     /// Every input frame; used for the 400 ms momentary level.
     recent: ebur128::EbuR128,
@@ -201,14 +202,14 @@ impl LoudnessNormalizer {
             // Analyze loudness every 512 samples
             if self.loudness_buffer.len() >= ANALYZE_CHUNK_SIZE {
                 if let Err(e) = self.recent.add_frames_f32(&self.loudness_buffer) {
-                    warn!("Failed to add frames to EBU R128: {}", e);
+                    warn!("Failed to add frames to recent EBU R128 meter: {}", e);
                 } else {
                     let is_eligible = self.recent.loudness_momentary().is_ok_and(|recent| {
                         recent.is_finite() && recent >= MIN_GAIN_INPUT_LUFS
                     });
                     if is_eligible {
                         if let Err(e) = self.eligible.add_frames_f32(&self.loudness_buffer) {
-                            warn!("Failed to add frames to EBU R128: {}", e);
+                            warn!("Failed to add frames to eligible EBU R128 meter: {}", e);
                         } else if let Ok(current_lufs) = self.eligible.loudness_global() {
                             if current_lufs.is_finite() && current_lufs < 0.0 {
                                 let gain_db = (TARGET_LUFS - current_lufs).min(MAX_GAIN_DB);

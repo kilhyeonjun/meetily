@@ -18,6 +18,12 @@ const bundle = await Bun.build({
           contents: `export { useRouter } from ${runtime};`,
           loader: 'ts',
         }));
+        builder.onLoad({ filter: /src\/components\/Sidebar\/SidebarProvider\.tsx$/ }, () => ({
+          contents: `export { useSidebar } from ${runtime};`, loader: 'ts',
+        }));
+        builder.onLoad({ filter: /src\/contexts\/RecordingStateContext\.tsx$/ }, () => ({
+          contents: `export { useRecordingState } from ${runtime};`, loader: 'ts',
+        }));
       },
     },
   ],

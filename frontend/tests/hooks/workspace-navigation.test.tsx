@@ -2,7 +2,7 @@ import {afterAll,afterEach,beforeEach,expect,mock,test} from 'bun:test';
 import {act,create,type ReactTestRenderer} from 'react-test-renderer';
 const originalNav={...await import('next/navigation')};const originalEvents={...await import('@tauri-apps/api/event')};const originalSidebar={...await import('../../src/components/Sidebar/SidebarProvider')};const originalRecording={...await import('../../src/contexts/RecordingStateContext')};const originalService={...await import('../../src/services/documentService')};
 const push=mock((..._args:unknown[])=>{});const refetch=mock(async()=>{});let documents:any[];let folders:any[];const calls:Array<[string,...unknown[]]>=[];
-const documentService={list:async()=>documents,folders:async()=>folders,create:async(title:string,type:string)=>{const doc={id:`created-${documents.length}`,title,document_type:type,folder_id:null};documents.push(doc);calls.push(['create',title,type]);return doc;},createFolder:async(name:string)=>{folders.push({id:'folder',name,parent_id:null});calls.push(['createFolder',name]);},renameFolder:async(id:string,name:string)=>{folders=folders.map(folder=>folder.id===id?{...folder,name}:folder);calls.push(['renameFolder',id,name]);},removeFolder:async(id:string)=>{folders=folders.filter(folder=>folder.id!==id);documents=documents.map(doc=>doc.folder_id===id?{...doc,folder_id:null}:doc);calls.push(['removeFolder',id]);},move:async(id:string,folderId:string|null)=>{documents=documents.map(doc=>doc.id===id?{...doc,folder_id:folderId}:doc);calls.push(['move',id,folderId]);},update:async(...args:unknown[])=>{calls.push(['update',...args]);}};
+const documentService={list:async()=>documents,folders:async()=>folders,getProperties:async()=>[],setProperties:async()=>[],create:async(title:string,type:string)=>{const doc={id:`created-${documents.length}`,title,document_type:type,folder_id:null};documents.push(doc);calls.push(['create',title,type]);return doc;},createFolder:async(name:string)=>{folders.push({id:'folder',name,parent_id:null});calls.push(['createFolder',name]);},renameFolder:async(id:string,name:string)=>{folders=folders.map(folder=>folder.id===id?{...folder,name}:folder);calls.push(['renameFolder',id,name]);},removeFolder:async(id:string)=>{folders=folders.filter(folder=>folder.id!==id);documents=documents.map(doc=>doc.folder_id===id?{...doc,folder_id:null}:doc);calls.push(['removeFolder',id]);},move:async(id:string,folderId:string|null)=>{documents=documents.map(doc=>doc.id===id?{...doc,folder_id:folderId}:doc);calls.push(['move',id,folderId]);},update:async(...args:unknown[])=>{calls.push(['update',...args]);}};
 mock.module('next/navigation',()=>({...originalNav,useRouter:()=>({push})}));mock.module('@tauri-apps/api/event',()=>({...originalEvents,listen:async()=>()=>{}}));mock.module('../../src/components/Sidebar/SidebarProvider',()=>({useSidebar:()=>({refetchMeetings:refetch})}));mock.module('../../src/contexts/RecordingStateContext',()=>({useRecordingState:()=>({isRecording:false})}));mock.module('../../src/services/documentService',()=>({...originalService,documentService}));
 const {WorkspaceProvider}=await import('../../src/components/Workspace/WorkspaceProvider');
 const {WorkspaceNav}=await import('../../src/components/Workspace/WorkspaceNav');const {DocumentControls}=await import('../../src/components/Workspace/DocumentControls');
@@ -20,7 +20,7 @@ afterAll(()=>{mock.module('next/navigation',()=>originalNav);mock.module('@tauri
 test('creates a meeting and personal note from visible forms and navigates to persistent document IDs',async()=>{await act(async()=>{renderer=create(<WorkspaceProvider><WorkspaceNav/></WorkspaceProvider>);});await click('New meeting');await name('Prepared agenda');await submit();expect(calls).toContainEqual(['create','Prepared agenda','meeting']);expect(push).toHaveBeenCalledWith('/meeting-details?id=created-0');await click('New note');await name('Personal ideas');await submit();expect(calls).toContainEqual(['create','Personal ideas','note']);});
 // Portalled action menus and preservation on removal are exercised in workspace.spec.ts.
 test('creates a root folder from the workspace form',async()=>{await act(async()=>{renderer=create(<WorkspaceProvider><WorkspaceNav/></WorkspaceProvider>);});await click('New folder');await name('Research');await submit();expect(calls).toContainEqual(['createFolder','Research']);expect(folders).toEqual([{id:'folder',name:'Research',parent_id:null}]);});
-test('meeting details save metadata, move documents and route only prepared meetings to recording',async()=>{const document={id:'prepared',title:'Agenda',document_type:'meeting' as const,scheduled_at:null,folder_id:null,folder_path:null,recording_session_id:null,has_recording:false,created_at:'',updated_at:''};await act(async()=>{renderer=create(<DocumentControls document={document} folders={[{id:'folder',name:'Projects',parent_id:null,created_at:'',updated_at:''}]} onUpdated={async()=>{}}/>);});act(()=>renderer!.root.findByProps({'aria-label':'Document title'}).props.onChange({target:{value:'Planning'}}));await click('Save details');expect(calls).toContainEqual(['update','prepared','Planning',null]);await act(async()=>renderer!.root.findByProps({'aria-label':'Document folder'}).props.onChange({target:{value:'folder'}}));expect(calls).toContainEqual(['move','prepared','folder']);await click('Start Recording');expect(session.get('preparedRecordingMeetingId')).toBe('prepared');expect(push).toHaveBeenCalledWith('/');await act(async()=>renderer!.update(<DocumentControls document={{...document,document_type:'note'}} folders={[]} onUpdated={async()=>{}}/>));expect(renderer!.root.findAllByType('button').some(node=>text(node)==='Start Recording')).toBe(false);});
+test('meeting details autosave metadata and route only prepared meetings to recording',async()=>{const document={id:'prepared',title:'Agenda',document_type:'meeting' as const,scheduled_at:null,folder_id:null,folder_path:null,recording_session_id:null,has_recording:false,created_at:'',updated_at:''};await act(async()=>{renderer=create(<DocumentControls document={document} folders={[]} onUpdated={async()=>{}}/>);});act(()=>renderer!.root.findByProps({'aria-label':'Document title'}).props.onChange({target:{value:'Planning'}}));await act(async()=>renderer!.root.findByProps({'aria-label':'Document title'}).props.onBlur());expect(calls).toContainEqual(['update','prepared','Planning',null]);await click('Start Recording');expect(session.get('preparedRecordingMeetingId')).toBe('prepared');expect(push).toHaveBeenCalledWith('/');await act(async()=>renderer!.update(<DocumentControls document={{...document,document_type:'note'}} folders={[]} onUpdated={async()=>{}}/>));expect(renderer!.root.findAllByType('button').some(node=>text(node)==='Start Recording')).toBe(false);});
 test('Seoul schedule uses local wall time and a title-only save preserves original ISO seconds/milliseconds', async () => {
   const previousTZ=process.env.TZ;
   process.env.TZ='Asia/Seoul';
@@ -28,12 +28,43 @@ test('Seoul schedule uses local wall time and a title-only save preserves origin
     const originalISO='2026-10-20T00:00:42.123Z';
     const document={id:'scheduled',title:'Agenda',document_type:'meeting' as const,scheduled_at:originalISO,folder_id:null,folder_path:null,recording_session_id:null,has_recording:false,created_at:'',updated_at:''};
     await act(async()=>{renderer=create(<DocumentControls document={document} folders={[]} onUpdated={async()=>{}}/>);});
+    expect(text(renderer!.root.findByProps({'aria-label':'Edit scheduled time'}))).toBe('2026-10-20 09:00');
+    await act(async()=>renderer!.root.findByProps({'aria-label':'Edit scheduled time'}).props.onClick());
     expect(renderer!.root.findByProps({'aria-label':'Scheduled time'}).props.value).toBe('2026-10-20T09:00');
     act(()=>renderer!.root.findByProps({'aria-label':'Document title'}).props.onChange({target:{value:'Renamed'}}));
-    await click('Save details');
+    await act(async()=>renderer!.root.findByProps({'aria-label':'Document title'}).props.onBlur());
     expect(calls).toContainEqual(['update','scheduled','Renamed',originalISO]);
-    act(()=>renderer!.root.findByProps({'aria-label':'Scheduled time'}).props.onChange({target:{value:'2026-10-21T10:30'}}));
-    await click('Save details');
+    await act(async()=>renderer!.root.findByProps({'aria-label':'Scheduled time'}).props.onChange({target:{value:'2026-10-21T10:30'}}));
+    expect(calls).not.toContainEqual(['update','scheduled','Renamed','2026-10-21T01:30:00.000Z']);
+    await act(async()=>renderer!.root.findByProps({'aria-label':'Scheduled time'}).props.onBlur());
     expect(calls).toContainEqual(['update','scheduled','Renamed','2026-10-21T01:30:00.000Z']);
   } finally { process.env.TZ=previousTZ; }
+});
+
+test('title rejects empty values and Escape reverts without saving', async () => {
+  const document={id:'prepared',title:'Agenda',document_type:'meeting' as const,scheduled_at:null,folder_id:null,folder_path:null,recording_session_id:null,has_recording:false,created_at:'',updated_at:''};
+  await act(async()=>{renderer=create(<DocumentControls document={document} folders={[]} onUpdated={async()=>{}}/>);});
+  act(()=>renderer!.root.findByProps({'aria-label':'Document title'}).props.onChange({target:{value:' '}}));
+  await act(async()=>renderer!.root.findByProps({'aria-label':'Document title'}).props.onBlur());
+  expect(renderer!.root.findByProps({'role':'alert'}).children).toContain('Title cannot be empty.');
+  expect(calls).toEqual([]);
+  act(()=>renderer!.root.findByProps({'aria-label':'Document title'}).props.onKeyDown({key:'Escape',preventDefault(){}}));
+  expect(renderer!.root.findByProps({'aria-label':'Document title'}).props.value).toBe('Agenda');
+});
+
+test('a pending metadata save does not refresh its document after unmount', async () => {
+  const originalUpdate = documentService.update;
+  const deferred = Promise.withResolvers<void>();
+  documentService.update = () => deferred.promise;
+  const onUpdated = mock(async () => {});
+  const document={id:'prepared',title:'Agenda',document_type:'meeting' as const,scheduled_at:null,folder_id:null,folder_path:null,recording_session_id:null,has_recording:false,created_at:'',updated_at:''};
+  try {
+    await act(async()=>{renderer=create(<DocumentControls document={document} folders={[]} onUpdated={onUpdated}/>);});
+    act(()=>renderer!.root.findByProps({'aria-label':'Document title'}).props.onChange({target:{value:'Renamed'}}));
+    let pending!: Promise<void>;
+    act(()=>{pending = renderer!.root.findByProps({'aria-label':'Document title'}).props.onBlur();});
+    await act(async()=>renderer!.unmount()); renderer=undefined;
+    await act(async()=>{deferred.resolve(); await pending;});
+    expect(onUpdated).not.toHaveBeenCalled();
+  } finally { documentService.update = originalUpdate; }
 });

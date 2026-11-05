@@ -62,6 +62,8 @@ jobs:
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: . -> target
+          # New key: cached CMake builds kept OpenSSL 4 include paths found before the pin.
+          key: openssl3
           cache-on-failure: true
       - name: Pin OpenSSL 3 for vendored cpp-httplib
         # llama.cpp's pinned cpp-httplib does not compile against OpenSSL 4 headers

@@ -183,7 +183,7 @@ Use your own OpenAI-compatible endpoint for AI summaries. Perfect for organizati
 
 ### 🎙️ Professional Audio Mixing
 
-Capture microphone and system audio simultaneously with clipping prevention. Microphone loudness normalization targets −23 LUFS with a maximum boost of +12 dB. Gain may increase only when the most recent 400 ms measures at least −45 LUFS; quieter input remains in the recording and transcription pipeline without raising the held gain. This is a level guard, not speech detection or noise removal. Background noise above the threshold may still be amplified, and very quiet speech is preserved without guaranteed amplification.
+Capture microphone and system audio simultaneously with clipping prevention. Microphone loudness normalization targets −23 LUFS with a maximum boost of +12 dB. The gain target is measured only on input analysed while the most recent 400 ms measures at least −45 LUFS, and gain changes only during such input; quieter input stays in the recording and transcription pipeline at the held gain and never lowers the measured level. This is a level guard, not speech detection or noise removal. Noise loud enough to pass the threshold counts as eligible input and may still be amplified, and very quiet speech is preserved without guaranteed amplification.
 
 <p align="center">
     <img src="docs/audio.png" width="650" style="border-radius: 10px;" alt="Device selection" />

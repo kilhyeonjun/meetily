@@ -40,9 +40,11 @@ mod recording_activity;
 
 static IS_RECORDING_STARTING: AtomicBool = AtomicBool::new(false);
 
-/// All exit paths share this guard, including initialization and stop-tail I/O.
+/// All exit paths share this guard, including initialization, stop-tail I/O and a stopped
+/// recording's background transcription (its late segments are not saved yet).
 pub fn is_recording_active() -> bool {
     recording_activity::active(&IS_RECORDING_STARTING, &IS_RECORDING, &IS_RECORDING_STOPPING)
+        || super::background_transcription::transcribing()
 }
 
 // Simple recording state tracking
@@ -111,7 +113,9 @@ fn finalize_recording_start() {
 
 // Global recording manager and transcription task to keep them alive during recording
 static RECORDING_MANAGER: Mutex<Option<RecordingManager>> = Mutex::new(None);
-static TRANSCRIPTION_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
+/// The live recording's transcription task and the session that routes its results.
+static TRANSCRIPTION_TASK: Mutex<Option<(JoinHandle<()>, Arc<transcription::TranscriptionSession>)>> =
+    Mutex::new(None);
 
 // Listener ID for proper cleanup - prevents microphone from staying active after recording stops
 static TRANSCRIPT_LISTENER_ID: Mutex<Option<tauri::EventId>> = Mutex::new(None);
@@ -440,10 +444,15 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     drop(engine_lifecycle_guard);
 
     // Start optimized parallel transcription task and store handle
-    let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
+    let transcription_session = transcription::TranscriptionSession::new();
+    let task_handle = transcription::start_transcription_task(
+        app.clone(),
+        transcription_receiver,
+        transcription_session.clone(),
+    );
     {
         let mut global_task = TRANSCRIPTION_TASK.lock().unwrap();
-        *global_task = Some(task_handle);
+        *global_task = Some((task_handle, transcription_session));
     }
 
     // CRITICAL: Listen for transcript-update events and save to recording manager
@@ -653,10 +662,15 @@ pub async fn start_recording_with_target<R: Runtime>(
     drop(engine_lifecycle_guard);
 
     // Start optimized parallel transcription task and store handle
-    let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
+    let transcription_session = transcription::TranscriptionSession::new();
+    let task_handle = transcription::start_transcription_task(
+        app.clone(),
+        transcription_receiver,
+        transcription_session.clone(),
+    );
     {
         let mut global_task = TRANSCRIPTION_TASK.lock().unwrap();
-        *global_task = Some(task_handle);
+        *global_task = Some((task_handle, transcription_session));
     }
 
     // CRITICAL: Listen for transcript-update events and save to recording manager
@@ -713,24 +727,28 @@ pub async fn start_recording_with_target<R: Runtime>(
     Ok(())
 }
 
-/// Stop recording with optimized graceful shutdown ensuring NO transcript chunks are lost
+/// Stop recording without waiting for the transcription backlog.
+///
+/// Capture stops and the audio is saved here; chunks still queued for transcription finish in
+/// the background (see `background_transcription`), so the next recording can start at once.
 pub async fn stop_recording<R: Runtime>(
     app: AppHandle<R>,
     _args: RecordingArgs,
 ) -> Result<(), String> {
-    info!(
-        "🛑 Starting optimized recording shutdown - ensuring ALL transcript chunks are preserved"
-    );
+    info!("🛑 Stopping recording; queued transcription continues in the background");
 
-    // Check if recording is active
+    // Errors (not Ok) for a stop that did nothing: callers such as the tray only report a
+    // completed stop, which makes the frontend save the meeting.
     if !IS_RECORDING.load(Ordering::SeqCst) {
         info!("Recording was not active");
-        return Ok(());
+        return Err("No recording in progress".to_string());
     }
 
     // Repeated Stop requests share the first stop's native session and event.
     // Acquire before taking the manager so another stop cannot emit empty IDs.
-    let Some(_stopping_guard) = StoppingGuard::acquire() else { return Ok(()); };
+    let Some(_stopping_guard) = StoppingGuard::acquire() else {
+        return Err("Recording is already stopping".to_string());
+    };
 
     // Emit shutdown progress to frontend
     let _ = app.emit(
@@ -782,160 +800,18 @@ pub async fn stop_recording<R: Runtime>(
         }
     }
 
-    // Step 2: Signal transcription workers to finish processing ALL queued chunks
-    let _ = app.emit(
-        "recording-shutdown-progress",
-        serde_json::json!({
-            "stage": "processing_transcripts",
-            "message": "Processing remaining transcript chunks...",
-            "progress": 40
-        }),
-    );
-
-    // Wait for transcription task with enhanced progress monitoring (NO TIMEOUT - we must process all chunks)
-    let transcription_task = {
-        let mut global_task = TRANSCRIPTION_TASK.lock().unwrap();
-        global_task.take()
-    };
-
-    if let Some(task_handle) = transcription_task {
-        info!("⏳ Waiting for ALL transcription chunks to be processed (no timeout - preserving every chunk)");
-
-        // Enhanced progress monitoring during shutdown
-        let progress_app = app.clone();
-        let progress_task = tokio::spawn(async move {
-            let last_update = std::time::Instant::now();
-
-            loop {
-                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-                // Emit periodic progress updates during shutdown
-                let elapsed = last_update.elapsed().as_secs();
-                let _ = progress_app.emit(
-                    "recording-shutdown-progress",
-                    serde_json::json!({
-                        "stage": "processing_transcripts",
-                        "message": format!("Processing transcripts... ({}s elapsed)", elapsed),
-                        "progress": 40,
-                        "detailed": true,
-                        "elapsed_seconds": elapsed
-                    }),
-                );
-            }
-        });
-
-        // Wait up to 10 minutes for transcription completion to prevent indefinite hangs
-        match tokio::time::timeout(
-            tokio::time::Duration::from_secs(600), // 10 minutes max
-            task_handle
-        ).await {
-            Ok(Ok(())) => {
-                info!("✅ ALL transcription chunks processed successfully - no data lost");
-            }
-            Ok(Err(e)) => {
-                warn!("⚠️ Transcription task completed with error: {:?}", e);
-                // Continue anyway - the worker may have processed most chunks
-            }
-            Err(_) => {
-                warn!("⏱️ Transcription timeout (10 minutes) reached, continuing shutdown to prevent indefinite hang");
-                // Continue shutdown even on timeout - better to lose some chunks than hang forever
-            }
-        }
-
-        // Stop progress monitoring
-        progress_task.abort();
-    } else {
-        info!("ℹ️ No transcription task found to wait for");
-    }
-
-    // Step 3: Now safely unload Whisper model after ALL chunks are processed
-    let _ = app.emit(
-        "recording-shutdown-progress",
-        serde_json::json!({
-            "stage": "unloading_model",
-            "message": "Unloading speech recognition model...",
-            "progress": 70
-        }),
-    );
-
-    info!("🧠 All transcript chunks processed. Now safely unloading transcription model...");
-
-    // Determine which provider was used and unload the appropriate model (with timeout)
-    let config = match tokio::time::timeout(
-        tokio::time::Duration::from_secs(30), // 30 seconds max for DB operation
-        crate::api::api::api_get_transcript_config(
-            app.clone(),
-            app.clone().state(),
-            None,
-        )
-    )
-    .await
-    {
-        Ok(Ok(Some(config))) => Some(config.provider),
-        Ok(Ok(None)) => None,
-        Ok(Err(e)) => {
-            warn!("⚠️ Failed to get transcript config: {:?}", e);
-            None
-        }
-        Err(_) => {
-            warn!("⏱️ Transcript config timeout (30s), continuing shutdown");
-            None
-        }
-    };
-
-    match config.as_deref() {
-        Some("parakeet") => {
-            info!("🦜 Unloading Parakeet model...");
-            let engine_clone = {
-                let engine_guard = crate::parakeet_engine::commands::PARAKEET_ENGINE
-                    .lock()
-                    .unwrap();
-                engine_guard.as_ref().cloned()
-            };
-
-            if let Some(engine) = engine_clone {
-                let current_model = engine
-                    .get_current_model()
-                    .await
-                    .unwrap_or_else(|| "unknown".to_string());
-                info!("Current Parakeet model before unload: '{}'", current_model);
-
-                if engine.unload_model().await {
-                    info!("✅ Parakeet model '{}' unloaded successfully", current_model);
-                } else {
-                    warn!("⚠️ Failed to unload Parakeet model '{}'", current_model);
-                }
-            } else {
-                warn!("⚠️ No Parakeet engine found to unload model");
-            }
-        }
-        _ => {
-            // Default to Whisper
-            info!("🎤 Unloading Whisper model...");
-            let engine_clone = {
-                let engine_guard = crate::whisper_engine::commands::WHISPER_ENGINE
-                    .lock()
-                    .unwrap();
-                engine_guard.as_ref().cloned()
-            };
-
-            if let Some(engine) = engine_clone {
-                let current_model = engine
-                    .get_current_model()
-                    .await
-                    .unwrap_or_else(|| "unknown".to_string());
-                info!("Current Whisper model before unload: '{}'", current_model);
-
-                if engine.unload_model().await {
-                    info!("✅ Whisper model '{}' unloaded successfully", current_model);
-                } else {
-                    warn!("⚠️ Failed to unload Whisper model '{}'", current_model);
-                }
-            } else {
-                warn!("⚠️ No Whisper engine found to unload model");
-            }
-        }
-    }
+    // Step 2: Detach transcription. Results from now on stay with this recording instead of
+    // reaching the live UI, and are finished in the background after Stop returns.
+    let transcription = TRANSCRIPTION_TASK.lock().unwrap().take();
+    let background = transcription.map(|(task, session)| {
+        session.detach();
+        let ticket = super::background_transcription::BackgroundTicket::register(
+            manager_for_cleanup
+                .as_ref()
+                .and_then(|manager| manager.get_recording_identity().recording_session_id),
+        );
+        (task, session, ticket)
+    });
 
     // Step 3.5: Track meeting ended analytics with privacy-safe metadata
     // Extract all data from manager BEFORE any async operations to avoid Send issues
@@ -1082,14 +958,36 @@ pub async fn stop_recording<R: Runtime>(
         (None, None, super::recording_saver::RecordingIdentity::default())
     };
 
+    // A short backlog usually drains while the audio is saved; only a longer one is reported to
+    // the frontend as background work.
+    let background_transcription = match background {
+        Some((mut task, session, ticket)) => {
+            let finished = tokio::time::timeout(
+                tokio::time::Duration::from_millis(1500),
+                &mut task,
+            )
+            .await
+            .is_ok();
+            super::background_transcription::spawn(
+                app.clone(),
+                (!finished).then_some(task),
+                session,
+                ticket,
+                meeting_folder.clone(),
+            );
+            !finished
+        }
+        None => false,
+    };
+    info!("Transcription continues in background: {}", background_transcription);
+
     // Set recording flag to false
     info!("🔍 Setting IS_RECORDING to false");
     IS_RECORDING.store(false, Ordering::SeqCst);
     // IS_RECORDING_STOPPING is cleared by _stopping_guard on scope exit.
 
-    // Step 4.5: Prepare metadata for frontend (NO database save)
-    // NOTE: We do NOT save to database here. The frontend will save after all transcripts are displayed.
-    // This ensures the user sees all transcripts streaming in before the database save happens.
+    // Step 4.5: Prepare metadata for frontend. The frontend saves the meeting with the
+    // transcripts it received before Stop; background_transcription appends the rest.
     let (folder_path_str, meeting_name_str) = match (&meeting_folder, &meeting_name) {
         (Some(path), Some(name)) => (
             Some(path.to_string_lossy().to_string()),
@@ -1103,9 +1001,6 @@ pub async fn stop_recording<R: Runtime>(
         folder_path_str.is_some(),
         meeting_name_str.is_some()
     );
-
-    // Database save removed - frontend will handle this after receiving all transcripts
-    info!("ℹ️ Skipping database save in Rust - frontend will save after all transcripts received");
 
     // Step 5: Complete shutdown
     let _ = app.emit(
@@ -1121,11 +1016,12 @@ pub async fn stop_recording<R: Runtime>(
     app.emit(
         "recording-stopped",
         serde_json::json!({
-            "message": "Recording stopped - frontend will save after all transcripts received",
+            "message": "Recording stopped - frontend saves the meeting now",
             "folder_path": folder_path_str,
             "meeting_name": meeting_name_str,
             "meeting_id": recording_identity.meeting_id,
-            "recording_session_id": recording_identity.recording_session_id
+            "recording_session_id": recording_identity.recording_session_id,
+            "background_transcription": background_transcription
         }),
     )
     .map_err(|e| e.to_string())?;
@@ -1133,7 +1029,7 @@ pub async fn stop_recording<R: Runtime>(
     // Update tray menu to reflect stopped state
     crate::tray::update_tray_menu(&app);
 
-    info!("🎉 Recording stopped successfully with ZERO transcript chunks lost");
+    info!("🎉 Recording stopped");
     Ok(())
 }
 

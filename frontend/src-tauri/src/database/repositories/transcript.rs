@@ -75,18 +75,56 @@ impl TranscriptsRepository {
             sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, folder_path, recording_session_id) VALUES (?, ?, ?, ?, ?, ?)")
                 .bind(&meeting_id).bind(meeting_title).bind(now).bind(now).bind(&folder_path).bind(&session_id).execute(&mut *transaction).await?;
         }
+        Self::insert_segments(&mut transaction, &meeting_id, transcripts).await?;
+        transaction.commit().await?;
+        Ok(meeting_id)
+    }
+
+    /// The meeting a recording session was saved into, once that save has happened.
+    pub async fn meeting_for_session(
+        pool: &SqlitePool,
+        recording_session_id: &str,
+    ) -> Result<Option<String>, SqlxError> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT id FROM meetings WHERE recording_session_id = ?")
+                .bind(recording_session_id)
+                .fetch_optional(pool)
+                .await?;
+        Ok(row.map(|(id,)| id))
+    }
+
+    /// Adds segments transcribed after the meeting was saved (the background tail after Stop).
+    pub async fn append_to_meeting(
+        pool: &SqlitePool,
+        meeting_id: &str,
+        transcripts: &[TranscriptSegment],
+    ) -> Result<(), SqlxError> {
+        let mut transaction = pool.begin().await?;
+        Self::insert_segments(&mut transaction, meeting_id, transcripts).await?;
+        sqlx::query("UPDATE meetings SET updated_at = ? WHERE id = ?")
+            .bind(Utc::now())
+            .bind(meeting_id)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await
+    }
+
+    async fn insert_segments(
+        transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        meeting_id: &str,
+        transcripts: &[TranscriptSegment],
+    ) -> Result<(), SqlxError> {
         for segment in transcripts {
             sqlx::query(
                 "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration)
                  VALUES (?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(format!("transcript-{}", Uuid::new_v4()))
-            .bind(&meeting_id).bind(&segment.text).bind(&segment.timestamp)
+            .bind(meeting_id).bind(&segment.text).bind(&segment.timestamp)
             .bind(segment.audio_start_time).bind(segment.audio_end_time).bind(segment.duration)
-            .execute(&mut *transaction).await?;
+            .execute(&mut **transaction).await?;
         }
-        transaction.commit().await?;
-        Ok(meeting_id)
+        Ok(())
     }
 
     /// Searches for a query string within the transcripts.
@@ -261,5 +299,39 @@ mod workspace_tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn late_segments_join_the_meeting_saved_for_their_session() {
+        let pool = test_pool().await;
+        let segment = |text: &str, start: f64| TranscriptSegment {
+            id: text.into(),
+            text: text.into(),
+            timestamp: "10:00:00".into(),
+            audio_start_time: Some(start),
+            audio_end_time: Some(start + 1.0),
+            duration: Some(1.0),
+        };
+        assert_eq!(TranscriptsRepository::meeting_for_session(&pool, "session-a").await.unwrap(), None);
+        let id = TranscriptsRepository::save_recording(
+            &pool, "Meeting", &[segment("before stop", 1.0)], None, None, Some("session-a"),
+        )
+        .await
+        .unwrap();
+        let found = TranscriptsRepository::meeting_for_session(&pool, "session-a").await.unwrap();
+        assert_eq!(found.as_deref(), Some(id.as_str()));
+
+        TranscriptsRepository::append_to_meeting(&pool, &id, &[segment("after stop", 9.0)])
+            .await
+            .unwrap();
+        let texts: Vec<(String,)> = sqlx::query_as(
+            "SELECT transcript FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time",
+        )
+        .bind(&id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let texts: Vec<&str> = texts.iter().map(|(t,)| t.as_str()).collect();
+        assert_eq!(texts, ["before stop", "after stop"]);
     }
 }

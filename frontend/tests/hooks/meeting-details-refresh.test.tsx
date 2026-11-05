@@ -4,6 +4,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import type { SummaryProcessResponse } from '../../src/types';
 
 const originalCore = { ...await import('@tauri-apps/api/core') };
+const originalEvents = { ...await import('@tauri-apps/api/event') };
 const originalAnalytics = { ...await import('../../src/lib/analytics') };
 const originalPreferences = { ...await import('../../src/lib/summary-language-preferences') };
 const originalToast = { ...await import('sonner') };
@@ -11,6 +12,7 @@ const originalNavigation = { ...await import('next/navigation') };
 const originalConfig = { ...await import('../../src/contexts/ConfigContext') };
 afterAll(() => {
   mock.module('@tauri-apps/api/core', () => originalCore);
+  mock.module('@tauri-apps/api/event', () => originalEvents);
   mock.module('../../src/lib/analytics', () => originalAnalytics);
   mock.module('../../src/lib/summary-language-preferences', () => originalPreferences);
   mock.module('sonner', () => originalToast);
@@ -63,10 +65,12 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   if (command === 'api_get_meeting_metadata') return readMetadata(args!.meetingId as string);
   if (command === 'api_get_meeting_transcripts') return readTranscripts(args!.meetingId as string);
   if (command === 'api_process_transcript') return { process_id: 'attempt-b' };
+  if (command === 'is_background_transcription_pending') return false;
   if (command === 'api_cancel_summary') return { cancelled: true };
   throw new Error(`Unexpected command: ${command}`);
 });
 mock.module('@tauri-apps/api/core', () => ({ ...originalCore, invoke }));
+mock.module('@tauri-apps/api/event', () => ({ ...originalEvents, listen: async () => () => {} }));
 const { SidebarProvider } = await import('../../src/components/Sidebar/SidebarProvider');
 const { useSummaryGeneration } = await import('../../src/hooks/meeting-details/useSummaryGeneration');
 const { useMeetingData } = await import('../../src/hooks/meeting-details/useMeetingData');

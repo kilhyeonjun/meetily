@@ -750,6 +750,7 @@ pub fn run() {
             start_recording,
             audio::recording_commands::get_recording_identity,
             stop_recording,
+            audio::background_transcription::is_background_transcription_pending,
             is_recording,
             get_transcription_status,
             read_audio_file,

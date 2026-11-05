@@ -39,6 +39,9 @@ mod playback_path;
 // Transcription module (provider abstraction, engine management, worker pool)
 pub mod transcription;
 
+// Finishing a stopped recording's transcription after Stop has returned
+pub mod background_transcription;
+
 // Shared utilities for import and retranscription
 pub(crate) mod common;
 

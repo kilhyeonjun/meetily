@@ -59,11 +59,13 @@ tests and builds the summary sidecar and macOS app. It produces a short-lived
 arm64 app artifact with an ad-hoc signature; it is not an Apple-notarized release.
 
 Local macOS app builds need a Cargo target directory without spaces (for
-example, not under `~/Library/Application Support`). whisper-rs-sys 0.11 builds
-its embedded Metal library with an unquoted path; a space drops `ggml-common.h`
-from it, Metal fails to compile at runtime and Whisper silently runs on the CPU.
-`build.rs` stops such builds. To check an app binary, `strings meetily | grep -c
-'} block_q4_0;'` must print 1 or more.
+example, not under `~/Library/Application Support`). whisper-rs-sys 0.11 inlines
+`ggml-common.h` into its embedded Metal library with a sed script; CMake escapes
+a space in the header path as `\ `, sed skips the missing file, Metal fails to
+compile at runtime and Whisper silently runs on the CPU. `build.rs` stops such
+builds. To check an app binary,
+`strings "Meetily KH.app/Contents/MacOS/meetily" | grep -c '} block_q4_0;'`
+must print 1 or more.
 
 The KH build profile `frontend/src-tauri/tauri.kh.conf.json` uses the name
 **Meetily KH** and identifier `com.kilhyeonjun.meetily`. It has separate SQLite

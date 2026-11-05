@@ -32,6 +32,17 @@ fn detect_and_report_gpu_capabilities() {
 
     match target_os.as_str() {
         "macos" => {
+            // whisper-rs-sys 0.11 inlines ggml-common.h into the embedded Metal source with an
+            // unquoted sed path. A space in the target directory makes sed drop the header silently,
+            // Metal fails to compile at runtime and Whisper falls back to the CPU (~10x slower).
+            let out_dir = std::env::var("OUT_DIR").unwrap_or_default();
+            if out_dir.contains(char::is_whitespace) {
+                panic!(
+                    "Cargo target directory contains whitespace ({out_dir}); \
+                     whisper-rs-sys would embed a broken Metal library. \
+                     Set CARGO_TARGET_DIR to a path without spaces."
+                );
+            }
             println!("cargo:warning=✅ macOS: Metal GPU acceleration ENABLED by default");
             #[cfg(feature = "coreml")]
             println!("cargo:warning=✅ CoreML acceleration ENABLED");

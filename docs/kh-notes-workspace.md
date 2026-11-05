@@ -58,6 +58,13 @@ The **KH Apple Silicon verification** workflow also runs native Rust library
 tests and builds the summary sidecar and macOS app. It produces a short-lived
 arm64 app artifact with an ad-hoc signature; it is not an Apple-notarized release.
 
+Local macOS app builds need a Cargo target directory without spaces (for
+example, not under `~/Library/Application Support`). whisper-rs-sys 0.11 builds
+its embedded Metal library with an unquoted path; a space drops `ggml-common.h`
+from it, Metal fails to compile at runtime and Whisper silently runs on the CPU.
+`build.rs` stops such builds. To check an app binary, `strings meetily | grep -c
+'} block_q4_0;'` must print 1 or more.
+
 The KH build profile `frontend/src-tauri/tauri.kh.conf.json` uses the name
 **Meetily KH** and identifier `com.kilhyeonjun.meetily`. It has separate SQLite
 and WebView storage from the vendor app. Models and saved meetings are not

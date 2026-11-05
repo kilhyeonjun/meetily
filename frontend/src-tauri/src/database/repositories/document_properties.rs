@@ -124,13 +124,25 @@ mod tests {
 
     #[tokio::test]
     async fn migration_preserves_existing_document() {
-        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
         sqlx::query("PRAGMA foreign_keys = ON").execute(&pool).await.unwrap();
-        sqlx::query("CREATE TABLE meetings (id TEXT PRIMARY KEY, title TEXT NOT NULL)").execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO meetings VALUES ('existing', 'Unchanged')").execute(&pool).await.unwrap();
+        let migrator = sqlx::migrate!("./migrations");
+        for migration in migrator.iter().filter(|m| m.version < 20261105000000) {
+            sqlx::raw_sql(&migration.sql).execute(&pool).await.unwrap();
+        }
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, folder_path) VALUES ('existing', 'Unchanged', '2026-01-01', '2026-01-01', '/existing/audio')").execute(&pool).await.unwrap();
         sqlx::raw_sql(include_str!("../../../migrations/20261105000000_document_properties.sql")).execute(&pool).await.unwrap();
         let title: String = sqlx::query_scalar("SELECT title FROM meetings WHERE id = 'existing'").fetch_one(&pool).await.unwrap();
         assert_eq!(title, "Unchanged");
         assert!(DocumentPropertiesRepository::list(&pool, "existing").await.unwrap().is_empty());
+        let document = DocumentsRepository::get(&pool, "existing").await.unwrap();
+        assert_eq!(document.folder_path.as_deref(), Some("/existing/audio"));
+        assert!(document.has_recording);
+        DocumentPropertiesRepository::replace(&pool, "existing", vec![input("url", "Notion", "https://notion.so/meeting")]).await.unwrap();
+        assert_eq!(DocumentPropertiesRepository::list(&pool, "existing").await.unwrap().len(), 1);
     }
 }

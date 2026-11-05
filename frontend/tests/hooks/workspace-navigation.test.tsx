@@ -28,6 +28,8 @@ test('Seoul schedule uses local wall time and a title-only save preserves origin
     const originalISO='2026-10-20T00:00:42.123Z';
     const document={id:'scheduled',title:'Agenda',document_type:'meeting' as const,scheduled_at:originalISO,folder_id:null,folder_path:null,recording_session_id:null,has_recording:false,created_at:'',updated_at:''};
     await act(async()=>{renderer=create(<DocumentControls document={document} folders={[]} onUpdated={async()=>{}}/>);});
+    expect(text(renderer!.root.findByProps({'aria-label':'Edit scheduled time'}))).toBe('2026-10-20 09:00');
+    await act(async()=>renderer!.root.findByProps({'aria-label':'Edit scheduled time'}).props.onClick());
     expect(renderer!.root.findByProps({'aria-label':'Scheduled time'}).props.value).toBe('2026-10-20T09:00');
     act(()=>renderer!.root.findByProps({'aria-label':'Document title'}).props.onChange({target:{value:'Renamed'}}));
     await act(async()=>renderer!.root.findByProps({'aria-label':'Document title'}).props.onBlur());

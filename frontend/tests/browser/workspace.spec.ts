@@ -162,6 +162,8 @@ test('document properties add, persist, edit, delete and undo with accessible co
   await form.getByRole('textbox', {name: 'Property label'}).fill('Notion');
   await form.getByRole('textbox', {name: 'Property value'}).press('Enter');
   await expect(header.getByRole('button', {name: 'notion.so', exact: true})).toBeVisible();
+  await expect(header.getByRole('button', {name: 'notion.so', exact: true})).toHaveAttribute('title', 'https://notion.so/meeting');
+  await expect(header.getByRole('button', {name: 'notion.so', exact: true}).locator('svg')).toHaveCSS('width', '14px');
   await page.reload();
   await expect(header.getByRole('button', {name: 'notion.so', exact: true})).toBeVisible();
   await header.getByRole('button', {name: 'Edit Notion', exact: true}).focus();
@@ -188,16 +190,39 @@ test('detail title autosaves and searchable folder picker shows full paths', asy
   await expect(page.getByRole('status')).toContainText('Saved');
   await page.getByRole('button', {name: 'Document folder'}).click();
   await page.getByRole('combobox', {name: 'Search folders'}).fill('Weekly');
-  await page.getByRole('option', {name: '/Research/Weekly planning', exact: true}).click();
-  await expect(page.getByRole('button', {name: 'Document folder'})).toContainText('/Research/Weekly planning');
+  await page.getByRole('option', {name: 'Research / Weekly planning', exact: true}).click();
+  await expect(page.getByRole('button', {name: 'Document folder'})).toContainText('Research / Weekly planning');
   await page.reload();
   await expect(title).toHaveValue('Updated planning');
-  await expect(page.getByRole('button', {name: 'Document folder'})).toContainText('/Research/Weekly planning');
+  await expect(page.getByRole('button', {name: 'Document folder'})).toContainText('Research / Weekly planning');
   await title.fill('');
   await title.press('Tab');
   await expect(page.getByRole('alert')).toContainText('Title cannot be empty');
   await title.press('Escape');
   await expect(title).toHaveValue('Updated planning');
+});
+
+test('scheduled text reveals a focused editor, autosaves and clears to Empty', async ({page}) => {
+  await page.goto('/meeting-details?id=agenda');
+  const schedule = page.getByRole('button', {name: 'Edit scheduled time'});
+  await expect(schedule).toHaveText('Empty');
+  await schedule.click();
+  const input = page.getByLabel('Scheduled time', {exact: true});
+  await expect(input).toBeFocused();
+  await input.fill('2026-11-06T09:30');
+  await expect(page.getByRole('status')).toHaveText('Saved');
+  await page.getByRole('textbox', {name: 'Document title'}).focus();
+  await expect(schedule).toHaveText('2026-11-06 09:30');
+  await page.reload();
+  await expect(schedule).toHaveText('2026-11-06 09:30');
+  await schedule.click();
+  await expect(input).toBeFocused();
+  await input.press('Escape');
+  await expect(schedule).toHaveText('2026-11-06 09:30');
+  await page.getByRole('button', {name: 'Clear scheduled time'}).click();
+  await expect(schedule).toHaveText('Empty');
+  await page.reload();
+  await expect(schedule).toHaveText('Empty');
 });
 
 test('property form validates URLs and Notion paste prefills label', async ({page}) => {

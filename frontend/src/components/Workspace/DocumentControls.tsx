@@ -2,11 +2,11 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
-import { CalendarDays, Check, ChevronDown, Clock, FileText, Folder, Link as LinkIcon, Pencil, Plus, Trash2, Type, X } from 'lucide-react';
+import { CalendarDays, Check, ChevronDown, Clock, ExternalLink, FileText, Folder, Link as LinkIcon, Pencil, Plus, Trash2, Type, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { documentService, canRecordDocument, type DocumentInfo, type DocumentFolder, type DocumentProperty, type PropertyInput } from '@/services/documentService';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
-import { folderPath } from '@/lib/workspace-tree';
+import { folderAncestors } from '@/lib/workspace-tree';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -83,6 +83,7 @@ export function DocumentControls({ document, folders, onUpdated }: {
 }) {
   const [title, setTitle] = useState(document.title);
   const [schedule, setSchedule] = useState(() => localSchedule(document.scheduled_at));
+  const [editingSchedule, setEditingSchedule] = useState(false);
   const [titleError, setTitleError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -142,12 +143,16 @@ export function DocumentControls({ document, folders, onUpdated }: {
       await documentService.update(document.id, committed.current.title, next);
       committed.current.scheduled_at = next;
     }, () => setSchedule(localSchedule(previous)));
+    setEditingSchedule(false);
   };
   const saveProperties = (next: PropertyInput[]) => save(async () => {
     const rows = await documentService.setProperties(document.id, next);
     currentProperties.current = rows; setProperties(rows);
   });
   const iconClass = 'h-4 w-4 shrink-0';
+  const folderOptions = [{id: '', path: 'Unfiled'}, ...folders.map(folder => ({
+    id: folder.id, path: folderAncestors(folder.id, folders).map(ancestor => ancestor.name).join(' / '),
+  }))];
   return <header aria-label="Document properties" className="border-b bg-background px-6 py-5 text-foreground">
     <div className="mb-4 flex items-start gap-3">
       <div className="min-w-0 flex-1">
@@ -162,15 +167,24 @@ export function DocumentControls({ document, folders, onUpdated }: {
     <div className="max-w-3xl space-y-1">
       <PropertyRow icon={<FileText className={iconClass}/>} label="Type"><span className="rounded bg-muted px-2 py-1 text-xs">{document.document_type === 'meeting' ? 'Meeting' : 'Note'}</span></PropertyRow>
       <PropertyRow icon={<Folder className={iconClass}/>} label="Folder">
-        <Popover open={folderOpen} onOpenChange={setFolderOpen}><PopoverTrigger asChild><Button aria-label="Document folder" variant="ghost" size="sm" disabled={saving} className="h-8 max-w-full justify-start px-2 font-normal"><span className="truncate">{document.folder_id ? folderPath(document.folder_id, folders) : 'Unfiled'}</span><ChevronDown className="ml-2 h-3 w-3 shrink-0"/></Button></PopoverTrigger>
-          <PopoverContent align="start" className="w-80 p-0"><Command><CommandInput placeholder="Search folders…" aria-label="Search folders"/><CommandList><CommandEmpty>No folders found.</CommandEmpty>{[{id: '', path: 'Unfiled'}, ...folders.map(folder => ({id: folder.id, path: folderPath(folder.id, folders)}))].map(folder => <CommandItem key={folder.id} value={folder.path} onSelect={() => {setFolderOpen(false); void save(() => documentService.move(document.id, folder.id || null));}}><Check className={`${iconClass} ${folder.id === (document.folder_id ?? '') ? '' : 'opacity-0'}`}/>{folder.path}</CommandItem>)}</CommandList></Command></PopoverContent>
+        <Popover open={folderOpen} onOpenChange={setFolderOpen}><PopoverTrigger asChild><Button aria-label="Document folder" variant="ghost" size="sm" disabled={saving} className="h-8 max-w-full justify-start px-2 font-normal"><span className="truncate">{folderOptions.find(folder => folder.id === (document.folder_id ?? ''))?.path ?? 'Unfiled'}</span><ChevronDown className="ml-2 h-3 w-3 shrink-0"/></Button></PopoverTrigger>
+          <PopoverContent align="start" className="w-80 p-0"><Command><CommandInput placeholder="Search folders…" aria-label="Search folders"/><CommandList><CommandEmpty>No folders found.</CommandEmpty>{folderOptions.map(folder => <CommandItem key={folder.id} value={folder.path} onSelect={() => {setFolderOpen(false); void save(() => documentService.move(document.id, folder.id || null));}}><Check className={`${iconClass} ${folder.id === (document.folder_id ?? '') ? '' : 'opacity-0'}`}/>{folder.path}</CommandItem>)}</CommandList></Command></PopoverContent>
         </Popover>
       </PropertyRow>
-      {document.document_type === 'meeting' && <PropertyRow icon={<CalendarDays className={iconClass}/>} label="Scheduled"><div className="flex items-center gap-1"><Input aria-label="Scheduled time" type="datetime-local" disabled={saving} className="h-8 w-auto max-w-full border-transparent shadow-none hover:border-input dark:[color-scheme:dark]" value={schedule} onChange={event => void saveSchedule(event.target.value)}/>{schedule && <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Clear scheduled time" disabled={saving} onClick={() => void saveSchedule('')}><X className="h-3 w-3"/></Button>}</div></PropertyRow>}
+      {document.document_type === 'meeting' && <PropertyRow icon={<CalendarDays className={iconClass}/>} label="Scheduled">
+        <div className="flex items-center gap-1">
+          {editingSchedule ? <Input autoFocus aria-label="Scheduled time" type="datetime-local" disabled={saving} className="h-8 w-auto max-w-full border-transparent shadow-none hover:border-input dark:[color-scheme:dark]" value={schedule} onBlur={() => setEditingSchedule(false)} onKeyDown={event => {
+            if (event.key === 'Enter' || event.key === 'Escape') { event.preventDefault(); setEditingSchedule(false); }
+          }} onChange={event => { void saveSchedule(event.target.value); }}/> : <Button variant="ghost" size="sm" aria-label="Edit scheduled time" disabled={saving} className={`h-8 px-2 font-normal ${schedule ? '' : 'text-muted-foreground'}`} onClick={() => setEditingSchedule(true)}>
+            {schedule ? schedule.replace('T', ' ') : 'Empty'}
+          </Button>}
+          {schedule && <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Clear scheduled time" disabled={saving} onClick={() => { setEditingSchedule(false); void saveSchedule(''); }}><X className="h-3 w-3"/></Button>}
+        </div>
+      </PropertyRow>}
       <PropertyRow icon={<Clock className={iconClass}/>} label="Created"><time dateTime={document.created_at} className="px-2 text-muted-foreground">{localSchedule(document.created_at).replace('T', ' ') || '—'}</time></PropertyRow>
       {properties.map((property, index) => <PropertyRow key={property.id} icon={property.kind === 'url' ? <LinkIcon className={iconClass}/> : <Type className={iconClass}/>} label={<span title={property.label}>{property.label}</span>}>
         <div className="flex min-w-0 items-center gap-1">
-          {property.kind === 'url' ? <button className="min-w-0 truncate rounded px-2 py-1 text-primary underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-ring" title={property.value} onClick={() => void invoke('open_external_url', {url: property.value}).catch(error => toast.error(String(error)))}>{hostname(property.value)}</button> : <span className="whitespace-pre-wrap break-words px-2 py-1">{property.value}</span>}
+          {property.kind === 'url' ? <button className="flex min-w-0 items-center gap-1 rounded px-2 py-1 text-primary underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-ring" title={property.value} onClick={() => void invoke('open_external_url', {url: property.value}).catch(error => toast.error(String(error)))}><span className="truncate">{hostname(property.value)}</span><ExternalLink aria-hidden="true" className="h-3.5 w-3.5 shrink-0"/></button> : <span className="min-w-0 whitespace-pre-wrap px-2 py-1 [overflow-wrap:anywhere]">{property.value}</span>}
           <div className="ml-auto flex shrink-0 opacity-0 focus-within:opacity-100 group-hover:opacity-100">
             <PropertyEditor property={property} disabled={saving} onSave={value => saveProperties(currentProperties.current.map((row, i) => i === index ? value : row))}><Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`Edit ${property.label}`} disabled={saving}><Pencil className="h-3 w-3"/></Button></PropertyEditor>
             <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete ${property.label}`} disabled={saving} onClick={async () => {

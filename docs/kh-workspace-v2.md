@@ -20,6 +20,7 @@ This integration extends prepared meetings and manual notes with nested folders 
 ## Document properties
 
 - The detail header saves title edits on blur or Enter; Escape restores the saved title. Folder and scheduled-time changes save immediately. Saved/saving status is shown without a separate save button.
+- Scheduled time displays a readable local timestamp (or Empty); click it to focus the date-time editor. Folder paths use readable `Parent / Child` labels. External links show an opening icon and expose their full URL on hover; text values wrap normally.
 - Meetings and notes support up to 50 ordered Link or Text properties. Labels contain 1–80 characters and values 1–2048 characters; links must use HTTP or HTTPS. Pasting a Notion URL into a new link pre-fills its label.
 - Add and edit properties from the header popovers. Link values open externally; deleting a property offers Undo. The forward-only properties migration leaves existing documents untouched and properties cascade when their document is deleted.
 

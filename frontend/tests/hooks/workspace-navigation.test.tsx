@@ -35,6 +35,8 @@ test('Seoul schedule uses local wall time and a title-only save preserves origin
     await act(async()=>renderer!.root.findByProps({'aria-label':'Document title'}).props.onBlur());
     expect(calls).toContainEqual(['update','scheduled','Renamed',originalISO]);
     await act(async()=>renderer!.root.findByProps({'aria-label':'Scheduled time'}).props.onChange({target:{value:'2026-10-21T10:30'}}));
+    expect(calls).not.toContainEqual(['update','scheduled','Renamed','2026-10-21T01:30:00.000Z']);
+    await act(async()=>renderer!.root.findByProps({'aria-label':'Scheduled time'}).props.onBlur());
     expect(calls).toContainEqual(['update','scheduled','Renamed','2026-10-21T01:30:00.000Z']);
   } finally { process.env.TZ=previousTZ; }
 });
@@ -48,4 +50,21 @@ test('title rejects empty values and Escape reverts without saving', async () =>
   expect(calls).toEqual([]);
   act(()=>renderer!.root.findByProps({'aria-label':'Document title'}).props.onKeyDown({key:'Escape',preventDefault(){}}));
   expect(renderer!.root.findByProps({'aria-label':'Document title'}).props.value).toBe('Agenda');
+});
+
+test('a pending metadata save does not refresh its document after unmount', async () => {
+  const originalUpdate = documentService.update;
+  const deferred = Promise.withResolvers<void>();
+  documentService.update = () => deferred.promise;
+  const onUpdated = mock(async () => {});
+  const document={id:'prepared',title:'Agenda',document_type:'meeting' as const,scheduled_at:null,folder_id:null,folder_path:null,recording_session_id:null,has_recording:false,created_at:'',updated_at:''};
+  try {
+    await act(async()=>{renderer=create(<DocumentControls document={document} folders={[]} onUpdated={onUpdated}/>);});
+    act(()=>renderer!.root.findByProps({'aria-label':'Document title'}).props.onChange({target:{value:'Renamed'}}));
+    let pending!: Promise<void>;
+    act(()=>{pending = renderer!.root.findByProps({'aria-label':'Document title'}).props.onBlur();});
+    await act(async()=>renderer!.unmount()); renderer=undefined;
+    await act(async()=>{deferred.resolve(); await pending;});
+    expect(onUpdated).not.toHaveBeenCalled();
+  } finally { documentService.update = originalUpdate; }
 });

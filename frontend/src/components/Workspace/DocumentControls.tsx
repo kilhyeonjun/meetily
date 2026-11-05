@@ -49,7 +49,7 @@ function PropertyEditor({ property, disabled, onSave, children }: {
     <PopoverContent align="start" className="w-80">
       <form className="space-y-3" aria-label={property ? 'Edit property' : 'Add property'} onSubmit={async event => {
         event.preventDefault();
-        const input = {kind, label: label.trim(), value: value.trim()};
+        const input = {id: property?.id, kind, label: label.trim(), value: value.trim()};
         const message = propertyError(input);
         setError(message);
         if (!message && await onSave(input)) setOpen(false);
@@ -92,12 +92,21 @@ export function DocumentControls({ document, folders, onUpdated }: {
   const [loaded, setLoaded] = useState(false);
   const currentProperties = useRef(properties);
   const busy = useRef(false);
+  const mounted = useRef(false);
+  const undoToasts = useRef(new Set<string | number>());
+  const cancelScheduleBlur = useRef(false);
   const committed = useRef({title: document.title, scheduled_at: document.scheduled_at});
-  const documentId = useRef(document.id);
-  documentId.current = document.id;
   const router = useRouter();
   const { isRecording } = useRecordingState();
   const { refetchMeetings } = useSidebar();
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      undoToasts.current.forEach(id => toast.dismiss(id));
+      undoToasts.current.clear();
+    };
+  }, []);
   useEffect(() => {
     committed.current = {title: document.title, scheduled_at: document.scheduled_at};
     setTitle(document.title); setSchedule(localSchedule(document.scheduled_at));
@@ -112,17 +121,23 @@ export function DocumentControls({ document, folders, onUpdated }: {
   }, [document.id]);
 
   const save = async (work: () => Promise<unknown>, revert: () => void = () => {}) => {
-    if (busy.current) return false;
+    if (!mounted.current) return false;
+    if (busy.current) {
+      revert();
+      toast.error('A save is in progress. Please try again when it finishes.');
+      return false;
+    }
     busy.current = true; setSaving(true); setSaved(false);
     try {
       try { await work(); }
-      catch (error) { revert(); toast.error(String(error)); return false; }
+      catch (error) { if (mounted.current) { revert(); toast.error(String(error)); } return false; }
+      if (!mounted.current) return false;
       setSaved(true);
       // Refresh errors must not misrepresent a committed write as a failed save.
-      try { await onUpdated(); await refetchMeetings(); window.dispatchEvent(new Event('documents-changed')); }
-      catch (error) { toast.error(`Saved, but could not refresh: ${String(error)}`); }
+      try { await onUpdated(); if (mounted.current) { await refetchMeetings(); window.dispatchEvent(new Event('documents-changed')); } }
+      catch (error) { if (mounted.current) toast.error(`Saved, but could not refresh: ${String(error)}`); }
       return true;
-    } finally { busy.current = false; setSaving(false); }
+    } finally { busy.current = false; if (mounted.current) setSaving(false); }
   };
   const saveTitle = async () => {
     const next = title.trim();
@@ -132,22 +147,36 @@ export function DocumentControls({ document, folders, onUpdated }: {
     const previous = committed.current.title;
     await save(async () => {
       await documentService.update(document.id, next, committed.current.scheduled_at);
-      committed.current.title = next; setTitle(next);
+      if (mounted.current) { committed.current.title = next; setTitle(next); }
     }, () => setTitle(previous));
   };
-  const saveSchedule = async (value: string) => {
-    setSchedule(value);
+  const saveSchedule = async (value: string | null) => {
     const previous = committed.current.scheduled_at;
-    const next = value ? new Date(value).toISOString() : null;
+    setEditingSchedule(false);
+    if (cancelScheduleBlur.current) { cancelScheduleBlur.current = false; return; }
+    // Native segmented editors emit an empty value for incomplete drafts.
+    // Only the explicit clear action passes null and is allowed to clear storage.
+    let next: string | null = null;
+    if (value !== null) {
+      const date = new Date(value);
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?$/.test(value) || Number.isNaN(date.getTime())) {
+        setSchedule(localSchedule(previous)); return;
+      }
+      next = date.toISOString();
+      if (localSchedule(next) !== value.slice(0, 16)) {
+        setSchedule(localSchedule(previous)); return;
+      }
+      if (value === localSchedule(previous)) { setSchedule(value); return; }
+    }
+    setSchedule(value ?? '');
     await save(async () => {
       await documentService.update(document.id, committed.current.title, next);
-      committed.current.scheduled_at = next;
+      if (mounted.current) committed.current.scheduled_at = next;
     }, () => setSchedule(localSchedule(previous)));
-    setEditingSchedule(false);
   };
   const saveProperties = (next: PropertyInput[]) => save(async () => {
     const rows = await documentService.setProperties(document.id, next);
-    currentProperties.current = rows; setProperties(rows);
+    if (mounted.current) { currentProperties.current = rows; setProperties(rows); }
   });
   const iconClass = 'h-4 w-4 shrink-0';
   const folderOptions = [{id: '', path: 'Unfiled'}, ...folders.map(folder => ({
@@ -173,12 +202,20 @@ export function DocumentControls({ document, folders, onUpdated }: {
       </PropertyRow>
       {document.document_type === 'meeting' && <PropertyRow icon={<CalendarDays className={iconClass}/>} label="Scheduled">
         <div className="flex items-center gap-1">
-          {editingSchedule ? <Input autoFocus aria-label="Scheduled time" type="datetime-local" disabled={saving} className="h-8 w-auto max-w-full border-transparent shadow-none hover:border-input dark:[color-scheme:dark]" value={schedule} onBlur={() => setEditingSchedule(false)} onKeyDown={event => {
-            if (event.key === 'Enter' || event.key === 'Escape') { event.preventDefault(); setEditingSchedule(false); }
-          }} onChange={event => { void saveSchedule(event.target.value); }}/> : <Button variant="ghost" size="sm" aria-label="Edit scheduled time" disabled={saving} className={`h-8 px-2 font-normal ${schedule ? '' : 'text-muted-foreground'}`} onClick={() => setEditingSchedule(true)}>
-            {schedule ? schedule.replace('T', ' ') : 'Empty'}
+          {editingSchedule ? <Input autoFocus aria-label="Scheduled time" type="datetime-local" disabled={saving} className="h-8 w-auto max-w-full border-transparent shadow-none hover:border-input dark:[color-scheme:dark]" value={schedule} onBlur={() => void saveSchedule(schedule)} onKeyDown={event => {
+            if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); }
+            if (event.key === 'Escape') {
+              event.preventDefault(); cancelScheduleBlur.current = true;
+              setSchedule(localSchedule(committed.current.scheduled_at)); setEditingSchedule(false);
+            }
+          }} onChange={event => setSchedule(event.target.value)}/> : <Button variant="ghost" size="sm" aria-label="Edit scheduled time" disabled={saving} className={`h-8 px-2 font-normal ${schedule ? '' : 'text-muted-foreground'}`} onClick={() => {
+            cancelScheduleBlur.current = false; setSchedule(localSchedule(committed.current.scheduled_at)); setEditingSchedule(true);
+          }}>
+            {localSchedule(committed.current.scheduled_at).replace('T', ' ') || 'Empty'}
           </Button>}
-          {schedule && <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Clear scheduled time" disabled={saving} onClick={() => { setEditingSchedule(false); void saveSchedule(''); }}><X className="h-3 w-3"/></Button>}
+          {committed.current.scheduled_at && <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Clear scheduled time" disabled={saving} onMouseDown={event => event.preventDefault()} onClick={() => {
+            cancelScheduleBlur.current = false; void saveSchedule(null);
+          }}><X className="h-3 w-3"/></Button>}
         </div>
       </PropertyRow>}
       <PropertyRow icon={<Clock className={iconClass}/>} label="Created"><time dateTime={document.created_at} className="px-2 text-muted-foreground">{localSchedule(document.created_at).replace('T', ' ') || '—'}</time></PropertyRow>
@@ -188,11 +225,13 @@ export function DocumentControls({ document, folders, onUpdated }: {
           <div className="ml-auto flex shrink-0 opacity-0 focus-within:opacity-100 group-hover:opacity-100">
             <PropertyEditor property={property} disabled={saving} onSave={value => saveProperties(currentProperties.current.map((row, i) => i === index ? value : row))}><Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`Edit ${property.label}`} disabled={saving}><Pencil className="h-3 w-3"/></Button></PropertyEditor>
             <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete ${property.label}`} disabled={saving} onClick={async () => {
-              const id = document.id;
-              if (await saveProperties(currentProperties.current.filter(row => row.id !== property.id))) toast('Property deleted', {action: {label: 'Undo', onClick: () => {
-                if (documentId.current !== id) return;
-                const next: PropertyInput[] = [...currentProperties.current]; next.splice(Math.min(index, next.length), 0, property); void saveProperties(next);
-              }}});
+              if (await saveProperties(currentProperties.current.filter(row => row.id !== property.id)) && mounted.current) {
+                const toastId = toast('Property deleted', {action: {label: 'Undo', onClick: () => {
+                  if (!mounted.current) return;
+                  const next: PropertyInput[] = [...currentProperties.current]; next.splice(Math.min(index, next.length), 0, property); void saveProperties(next);
+                }}});
+                undoToasts.current.add(toastId);
+              }
             }}><Trash2 className="h-3 w-3"/></Button>
           </div>
         </div>

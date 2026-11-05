@@ -19,10 +19,10 @@ This integration extends prepared meetings and manual notes with nested folders 
 
 ## Document properties
 
-- The detail header saves title edits on blur or Enter; Escape restores the saved title. Folder and scheduled-time changes save immediately. Saved/saving status is shown without a separate save button.
-- Scheduled time displays a readable local timestamp (or Empty); click it to focus the date-time editor. Folder paths use readable `Parent / Child` labels. External links show an opening icon and expose their full URL on hover; text values wrap normally.
+- The detail header saves title edits on blur or Enter; Escape restores the saved title. Folder changes save immediately. Saved/saving status is shown without a separate save button; attempting another action during a save shows a message instead of silently dropping it.
+- Scheduled time displays a readable local timestamp (or Empty); click it to focus the date-time editor. Complete valid drafts save on blur or Enter. Escape restores the saved value, and empty/incomplete drafts never clear it: only the explicit X button clears the schedule. Folder paths use readable `Parent / Child` labels. External links show an opening icon and expose their full URL on hover; text values wrap normally.
 - Meetings and notes support up to 50 ordered Link or Text properties. Labels contain 1–80 characters and values 1–2048 characters; links must use HTTP or HTTPS. Pasting a Notion URL into a new link pre-fills its label.
-- Add and edit properties from the header popovers. Link values open externally; deleting a property offers Undo. The forward-only properties migration leaves existing documents untouched and properties cascade when their document is deleted.
+- Add and edit properties from the header popovers. Existing property IDs and creation timestamps survive replacement when owned by that document. Link values open externally using validated HTTP/HTTPS URLs, without a Windows command shell. Deleting a property offers Undo; navigating away dismisses its toast and late saves cannot refresh a different document. The forward-only properties migration leaves existing documents untouched and properties cascade when their document is deleted.
 
 
 ## Community attribution

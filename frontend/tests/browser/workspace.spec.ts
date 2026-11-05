@@ -210,19 +210,45 @@ test('scheduled text reveals a focused editor, autosaves and clears to Empty', a
   const input = page.getByLabel('Scheduled time', {exact: true});
   await expect(input).toBeFocused();
   await input.fill('2026-11-06T09:30');
-  await expect(page.getByRole('status')).toHaveText('Saved');
+  await expect(input).toBeFocused();
   await page.getByRole('textbox', {name: 'Document title'}).focus();
+  await expect(page.getByRole('status')).toHaveText('Saved');
   await expect(schedule).toHaveText('2026-11-06 09:30');
   await page.reload();
   await expect(schedule).toHaveText('2026-11-06 09:30');
   await schedule.click();
   await expect(input).toBeFocused();
+  await input.press('Backspace');
+  await expect(input).toHaveValue('');
+  expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('workspace-fixture')!).documents.find((doc: {id: string}) => doc.id === 'agenda').scheduled_at)).not.toBeNull();
+  await page.getByRole('textbox', {name: 'Document title'}).focus();
+  await expect(schedule).toHaveText('2026-11-06 09:30');
+  await page.reload();
+  await expect(schedule).toHaveText('2026-11-06 09:30');
+  await schedule.click();
+  await input.fill('2026-12-01T10:45');
   await input.press('Escape');
   await expect(schedule).toHaveText('2026-11-06 09:30');
   await page.getByRole('button', {name: 'Clear scheduled time'}).click();
   await expect(schedule).toHaveText('Empty');
   await page.reload();
   await expect(schedule).toHaveText('Empty');
+});
+
+test('deletion undo toast is dismissed when navigating to a different document', async ({page}) => {
+  await page.goto('/meeting-details?id=agenda');
+  await page.getByRole('button', {name: 'Add property', exact: true}).click();
+  const form = page.getByRole('form', {name: 'Add property', exact: true});
+  await form.getByRole('textbox', {name: 'Property label'}).fill('Notion');
+  await form.getByRole('textbox', {name: 'Property value'}).fill('https://notion.so/meeting');
+  await form.getByRole('button', {name: 'Add property', exact: true}).click();
+  const remove = page.getByRole('button', {name: 'Delete Notion', exact: true});
+  await remove.focus(); await remove.click();
+  await expect(page.getByRole('button', {name: 'Undo', exact: true})).toBeVisible();
+  await page.getByRole('treeitem', {name: 'Research', exact: false}).first().click();
+  await page.getByText('제품 개선 아이디어 · Product ideas', {exact: true}).click();
+  await expect(page.getByRole('textbox', {name: 'Document title'})).toHaveValue('제품 개선 아이디어 · Product ideas');
+  await expect(page.getByRole('button', {name: 'Undo', exact: true})).toHaveCount(0);
 });
 
 test('property form validates URLs and Notion paste prefills label', async ({page}) => {

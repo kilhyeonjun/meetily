@@ -46,6 +46,7 @@ const recordedDocument = (id: string) => ({
 });
 const metadata = (id: string) => ({ id, title: id, created_at: '2026-09-01', updated_at: '2026-09-01' });
 let readMetadata: (id: string) => Promise<unknown>;
+let readDocument: (id: string) => Promise<unknown>;
 let readTranscripts: (id: string) => Promise<unknown>;
 const transcriptPage = {
   transcripts: [{ id: 'transcript', text: 'Meeting transcript', timestamp: '00:00' }], total_count: 1, has_more: false,
@@ -53,8 +54,9 @@ const transcriptPage = {
 let savedSummary: SummaryProcessResponse;
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
   if (command === 'api_get_meetings' || command === 'api_get_documents') return [];
-  if (command === 'api_get_document') return recordedDocument(args!.documentId as string);
+  if (command === 'api_get_document') return readDocument(args!.documentId as string);
   if (command === 'api_get_folders') return [];
+  if (command === 'api_get_document_properties') return [];
   if (command === 'api_get_meeting_summary_context') return {context:'',useInherited:true,inherited:[]};
   if (command === 'api_get_global_summary_context') return {context:''};
   if (command === 'api_get_summary') return { ...savedSummary, meeting_id: args!.meetingId };
@@ -95,6 +97,7 @@ const realClearInterval = globalThis.clearInterval;
 beforeEach(() => {
   selectedMeeting = 'meeting-a';
   readMetadata = async id => metadata(id);
+  readDocument = async id => recordedDocument(id);
   readTranscripts = async () => transcriptPage;
   savedSummary = { meeting_id: selectedMeeting, status: 'pending', start: 'attempt-a', end: null, data: null, error: null, meetingName: 'Meeting A' };
   mounts = 0; timers.clear(); invoke.mockClear(); notify.mockClear();
@@ -183,4 +186,20 @@ describe('meeting route transcript refresh', () => {
     expect(invoke.mock.calls.find(([command]) => command === 'api_cancel_summary')?.[1]?.processId).toBe('attempt-b');
     expect(timers.size).toBe(0);
   });
+});
+
+test('a late document refresh cannot replace the currently selected document', async () => {
+  await show();
+  // Import after mock.module so this component shares the mocked IPC boundary.
+  const {DocumentControls} = await import('../../src/components/Workspace/DocumentControls');
+  const oldRefresh = renderer!.root.findByType(DocumentControls).props.onUpdated as () => Promise<void>;
+  const deferred = Promise.withResolvers<unknown>();
+  readDocument = id => id === 'meeting-a' ? deferred.promise : Promise.resolve(recordedDocument(id));
+  let pending!: Promise<void>;
+  act(()=>{pending = oldRefresh();});
+  selectedMeeting = 'meeting-b';
+  await show();
+  await act(async()=>{deferred.resolve(recordedDocument('meeting-a')); await pending;});
+  expect(renderer!.root.findByType(DocumentControls).props.document.id).toBe('meeting-b');
+  expect(text()).not.toContain('Loading document');
 });

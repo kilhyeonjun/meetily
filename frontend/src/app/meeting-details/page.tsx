@@ -1,6 +1,6 @@
 "use client"
 import { useSidebar } from "@/components/Sidebar/SidebarProvider";
-import { useState, useEffect, useCallback, Suspense } from "react";
+import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { MeetingSummary, SummaryProcessResponse, Transcript } from "@/types";
 import PageContent from "./page-content";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -300,7 +300,9 @@ function RecordedMeetingDetailsContent() {
 function MeetingDetailsContent() {
   const params=useSearchParams();const id=params.get('id');
   const [document,setDocument]=useState<DocumentInfo|null>(null);const [folders,setFolders]=useState<DocumentFolder[]>([]);const [error,setError]=useState(false);const [attempt,setAttempt]=useState(0);
-  const load=useCallback(async()=>{if(!id)return;const [doc,groups]=await Promise.all([documentService.get(id),documentService.folders()]);setDocument(doc);setFolders(groups);},[id]);
+  const activeId=useRef(id);activeId.current=id;
+  useEffect(()=>{activeId.current=id;return()=>{activeId.current=null;};},[id]);
+  const load=useCallback(async()=>{if(!id)return;const [doc,groups]=await Promise.all([documentService.get(id),documentService.folders()]);if(activeId.current!==id)return;setDocument(doc);setFolders(groups);},[id]);
   useEffect(()=>{let cancelled=false;setDocument(null);setError(false);if(id)void Promise.all([documentService.get(id),documentService.folders()]).then(([doc,groups])=>{if(!cancelled){setDocument(doc);setFolders(groups);}},()=>{if(!cancelled)setError(true);});return()=>{cancelled=true;};},[id,attempt]);
   if(error)return <div role="alert" className="p-6">Could not load document. <button onClick={()=>setAttempt(v=>v+1)}>Retry</button></div>;
   if(!document||document.id!==id)return <p className="p-6">Loading document…</p>;

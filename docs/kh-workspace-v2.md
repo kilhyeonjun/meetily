@@ -17,6 +17,13 @@ This integration extends prepared meetings and manual notes with nested folders 
 - Recorded meetings can play saved audio and seek from transcript timestamps. Missing recordings and prepared meetings without audio have no playback. Native lookup accepts a meeting ID and grants only its canonical audio file.
 - Keep Running in Tray defaults on. Closing a busy recording window keeps it in the tray. Explicit Quit/Cmd+Q is blocked while recording starts, runs or is saved. This does not protect against a process crash, forced OS termination or power loss.
 
+## Document properties
+
+- The detail header saves title edits on blur or Enter; Escape restores the saved title. Folder and scheduled-time changes save immediately. Saved/saving status is shown without a separate save button.
+- Meetings and notes support up to 50 ordered Link or Text properties. Labels contain 1–80 characters and values 1–2048 characters; links must use HTTP or HTTPS. Pasting a Notion URL into a new link pre-fills its label.
+- Add and edit properties from the header popovers. Link values open externally; deleting a property offers Undo. The forward-only properties migration leaves existing documents untouched and properties cascade when their document is deleted.
+
+
 ## Community attribution
 
 The following source PRs informed or contributed to this integration. They are adapted to the KH document lifecycle and reviewed as integration changes; their authors' test reports are not substitutes for this branch's verification.

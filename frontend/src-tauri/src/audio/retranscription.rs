@@ -792,6 +792,13 @@ pub async fn start_retranscription_command<R: Runtime>(
         return Err("Retranscription already in progress".to_string());
     }
 
+    // Retranscription replaces all transcripts; late segments still arriving would be added twice.
+    if let Some(state) = app.try_state::<crate::state::AppState>() {
+        if super::background_transcription::meeting_pending(state.db_manager.pool(), &meeting_id).await? {
+            return Err("This recording is still being transcribed. Try again when it finishes.".to_string());
+        }
+    }
+
     // Clone values for the spawned task
     let meeting_id_clone = meeting_id.clone();
 

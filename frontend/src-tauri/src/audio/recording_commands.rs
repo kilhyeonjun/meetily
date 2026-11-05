@@ -746,7 +746,7 @@ pub async fn stop_recording<R: Runtime>(
 
     // Repeated Stop requests share the first stop's native session and event.
     // Acquire before taking the manager so another stop cannot emit empty IDs.
-    let Some(_stopping_guard) = StoppingGuard::acquire() else {
+    let Some(stopping_guard) = StoppingGuard::acquire() else {
         return Err("Recording is already stopping".to_string());
     };
 
@@ -786,7 +786,7 @@ pub async fn stop_recording<R: Runtime>(
         }
         Err(e) => {
             error!("❌ Failed to stop audio streams: {}", e);
-            return Err(format!("Failed to stop audio streams: {}", e)); // _stopping_guard clears on return
+            return Err(format!("Failed to stop audio streams: {}", e)); // stopping_guard clears on return
         }
     }
 
@@ -960,7 +960,7 @@ pub async fn stop_recording<R: Runtime>(
 
     // A short backlog usually drains while the audio is saved; only a longer one is reported to
     // the frontend as background work.
-    let background_transcription = match background {
+    let background = match background {
         Some((mut task, session, ticket)) => {
             let finished = tokio::time::timeout(
                 tokio::time::Duration::from_millis(1500),
@@ -968,23 +968,16 @@ pub async fn stop_recording<R: Runtime>(
             )
             .await
             .is_ok();
-            super::background_transcription::spawn(
-                app.clone(),
-                (!finished).then_some(task),
-                session,
-                ticket,
-                meeting_folder.clone(),
-            );
-            !finished
+            Some(((!finished).then_some(task), session, ticket))
         }
-        None => false,
+        None => None,
     };
+    let background_transcription = matches!(background, Some((Some(_), _, _)));
     info!("Transcription continues in background: {}", background_transcription);
 
     // Set recording flag to false
     info!("🔍 Setting IS_RECORDING to false");
     IS_RECORDING.store(false, Ordering::SeqCst);
-    // IS_RECORDING_STOPPING is cleared by _stopping_guard on scope exit.
 
     // Step 4.5: Prepare metadata for frontend. The frontend saves the meeting with the
     // transcripts it received before Stop; background_transcription appends the rest.
@@ -1013,7 +1006,7 @@ pub async fn stop_recording<R: Runtime>(
     );
 
     // Emit final stop event with folder_path and meeting_name for frontend to save
-    app.emit(
+    let stopped_event = app.emit(
         "recording-stopped",
         serde_json::json!({
             "message": "Recording stopped - frontend saves the meeting now",
@@ -1023,14 +1016,20 @@ pub async fn stop_recording<R: Runtime>(
             "recording_session_id": recording_identity.recording_session_id,
             "background_transcription": background_transcription
         }),
-    )
-    .map_err(|e| e.to_string())?;
+    );
 
     // Update tray menu to reflect stopped state
     crate::tray::update_tray_menu(&app);
 
+    // Start the drain only once this recording no longer counts as active, so its final model
+    // unload is not skipped because of the stop itself. The ticket keeps quit blocked meanwhile.
+    drop(stopping_guard);
+    if let Some((task, session, ticket)) = background {
+        super::background_transcription::spawn(app.clone(), task, session, ticket, meeting_folder);
+    }
+
     info!("🎉 Recording stopped");
-    Ok(())
+    stopped_event.map_err(|e| e.to_string())
 }
 
 /// Check if recording is active

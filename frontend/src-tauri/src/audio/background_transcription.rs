@@ -32,6 +32,10 @@ static PENDING_SESSIONS: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mut
 /// How long late segments wait for the frontend to save the meeting row.
 const MEETING_SAVE_WAIT: Duration = Duration::from_secs(600);
 
+/// Upper bound for draining one stopped recording (a CPU-only backlog of a long meeting
+/// took ~15 minutes on 2026-11-05).
+const DRAIN_LIMIT: Duration = Duration::from_secs(1800);
+
 pub fn transcribing() -> bool {
     TRANSCRIBING.load(Ordering::SeqCst) > 0
 }
@@ -91,9 +95,15 @@ async fn finish<R: Runtime>(
     mut ticket: BackgroundTicket,
     folder: Option<PathBuf>,
 ) {
-    if let Some(task) = task {
-        if task.await.is_err() {
-            error!("Background transcription task panicked");
+    if let Some(mut task) = task {
+        match tokio::time::timeout(DRAIN_LIMIT, &mut task).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => error!("Background transcription task panicked"),
+            Err(_) => {
+                // Keep what was transcribed; a stuck task must not block quit for the session.
+                error!("Background transcription still running after {:?}; stopping it", DRAIN_LIMIT);
+                task.abort();
+            }
         }
     }
     let tail = session.take_tail();
@@ -193,19 +203,23 @@ fn db_segment(update: &TranscriptUpdate) -> DbSegment {
 }
 
 /// Whether a meeting still waits for segments transcribed after its recording stopped.
-#[tauri::command]
-pub async fn is_background_transcription_pending(
-    state: tauri::State<'_, AppState>,
-    meeting_id: String,
-) -> Result<bool, String> {
+pub(crate) async fn meeting_pending(pool: &sqlx::SqlitePool, meeting_id: &str) -> Result<bool, String> {
     let row: Option<(Option<String>,)> =
         sqlx::query_as("SELECT recording_session_id FROM meetings WHERE id = ?")
-            .bind(&meeting_id)
-            .fetch_optional(state.db_manager.pool())
+            .bind(meeting_id)
+            .fetch_optional(pool)
             .await
             .map_err(|e| e.to_string())?;
     Ok(match row {
         Some((Some(session_id),)) => pending_sessions().contains(&session_id),
         _ => false,
     })
+}
+
+#[tauri::command]
+pub async fn is_background_transcription_pending(
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+) -> Result<bool, String> {
+    meeting_pending(state.db_manager.pool(), &meeting_id).await
 }

@@ -242,12 +242,14 @@ pub fn start_transcription_task<R: Runtime>(
             Ok(engine) => engine,
             Err(e) => {
                 error!("Failed to initialize transcription engine");
-                let _ = app.emit("transcription-error", serde_json::json!({
-                    "error": e,
-                    "userMessage": "Recording failed: Unable to initialize speech recognition. Please check your model settings.",
-                    "actionable": true,
-                    "phase": "active"
-                }));
+                if !session.is_detached() {
+                    let _ = app.emit("transcription-error", serde_json::json!({
+                        "error": e,
+                        "userMessage": "Recording failed: Unable to initialize speech recognition. Please check your model settings.",
+                        "actionable": true,
+                        "phase": "active"
+                    }));
+                }
                 return;
             }
         };
@@ -290,11 +292,10 @@ pub fn start_transcription_task<R: Runtime>(
                     let chunk_duration = chunk.data.len() as f64 / chunk.sample_rate as f64;
                     let processing_started = Instant::now();
 
-                    if !engine_clone.is_model_loaded().await {
+                    if !model_ready(&engine_clone, &session_clone).await {
                         stats.record_failure(WorkerFailureCategory::ModelNotLoaded);
                     } else {
-                        let live = !session_clone.is_detached();
-                        match transcribe_chunk_with_provider(&engine_clone, chunk, &app_clone, live).await {
+                        match transcribe_chunk_with_provider(&engine_clone, chunk, &app_clone, &session_clone).await {
                             Ok((transcript, confidence_opt, is_partial)) => {
                                 if let Some(confidence) = confidence_opt {
                                     stats.confidence_total += confidence as f64;
@@ -302,7 +303,7 @@ pub fn start_transcription_task<R: Runtime>(
                                 }
 
                                 if should_emit_transcript(&transcript) {
-                                    if live && SPEECH_DETECTED_EMITTED
+                                    if !session_clone.is_detached() && SPEECH_DETECTED_EMITTED
                                         .compare_exchange(
                                             false,
                                             true,
@@ -364,13 +365,13 @@ pub fn start_transcription_task<R: Runtime>(
                             Err(error @ TranscriptionError::EngineFailed(_)) => {
                                 stats.record_failure(WorkerFailureCategory::EngineFailed);
                                 warn!("Transcription engine failed: {}", error);
-                                if live {
+                                if !session_clone.is_detached() {
                                     let _ = app_clone.emit("transcription-warning", error.to_string());
                                 }
                             }
                             Err(error @ TranscriptionError::UnsupportedLanguage(_)) => {
                                 stats.record_failure(WorkerFailureCategory::UnsupportedLanguage);
-                                if live {
+                                if !session_clone.is_detached() {
                                     let _ = app_clone.emit("transcription-warning", error.to_string());
                                 }
                             }
@@ -465,12 +466,12 @@ pub fn start_transcription_task<R: Runtime>(
 }
 
 /// Transcribe audio chunk using the appropriate provider (Whisper, Parakeet, or trait-based)
-/// Returns: (text, confidence Option, is_partial). Errors reach the UI only while `live`.
+/// Returns: (text, confidence Option, is_partial). Errors reach the UI only while the session is live.
 async fn transcribe_chunk_with_provider<R: Runtime>(
     engine: &TranscriptionEngine,
     chunk: AudioChunk,
     app: &AppHandle<R>,
-    live: bool,
+    session: &TranscriptionSession,
 ) -> std::result::Result<(String, Option<f32>, bool), TranscriptionError> {
     let speech_samples = if chunk.sample_rate != 16000 {
         crate::audio::audio_processing::resample_audio(&chunk.data, chunk.sample_rate, 16000)
@@ -508,7 +509,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
         }
     };
 
-    if let (Err(error), true) = (&result, live) {
+    if let (Err(error), false) = (&result, session.is_detached()) {
         let _ = app.emit(
             "transcription-error",
             &serde_json::json!({
@@ -520,6 +521,22 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
         );
     }
     result
+}
+
+/// While live, a missing model fails the chunk as before. A stopped recording finishing in the
+/// background waits instead: the next recording may be reloading the model they share.
+async fn model_ready(engine: &TranscriptionEngine, session: &TranscriptionSession) -> bool {
+    const RELOAD_WAIT: Duration = Duration::from_secs(120);
+    let deadline = Instant::now() + RELOAD_WAIT;
+    loop {
+        if engine.is_model_loaded().await {
+            return true;
+        }
+        if !session.is_detached() || Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
 
 /// Format current timestamp (wall-clock time)

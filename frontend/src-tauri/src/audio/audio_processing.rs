@@ -136,16 +136,15 @@ impl TruePeakLimiter {
     }
 }
 
-/// Professional loudness normalizer using EBU R128 standard
-/// This is a STATEFUL normalizer that tracks cumulative loudness over time
-///
-/// EBU R128 is the broadcast industry standard for loudness normalization:
-/// - Target: -23 LUFS (Loudness Units relative to Full Scale)
-/// - Used by: Netflix, YouTube, Spotify, all professional broadcast
-/// - Perceptually accurate (not just simple RMS)
-///
+/// Stateful microphone gain using EBU R128 loudness.
+/// The gain target is measured only on input whose recent 400 ms level passed the guard
+/// (including up to ~400 ms of release after louder input), so settled quiet background
+/// does not lower the measured level. Samples are never gated.
 pub struct LoudnessNormalizer {
-    ebur128: ebur128::EbuR128,
+    /// Every input frame; used for the 400 ms momentary level.
+    recent: ebur128::EbuR128,
+    /// Only frames analysed while the momentary level was at least -45 LUFS.
+    eligible: ebur128::EbuR128,
     limiter: TruePeakLimiter,
     gain_linear: f32,
     loudness_buffer: Vec<f32>,
@@ -162,13 +161,16 @@ impl LoudnessNormalizer {
         const TRUE_PEAK_LIMIT: f64 = -1.0;
         const ANALYZE_CHUNK_SIZE: usize = 512;
 
-        let ebur128 = ebur128::EbuR128::new(channels, sample_rate, ebur128::Mode::I | ebur128::Mode::TRUE_PEAK)
+        let recent = ebur128::EbuR128::new(channels, sample_rate, ebur128::Mode::M)
+            .map_err(|e| anyhow::anyhow!("Failed to create EBU R128 normalizer: {}", e))?;
+        let eligible = ebur128::EbuR128::new(channels, sample_rate, ebur128::Mode::I)
             .map_err(|e| anyhow::anyhow!("Failed to create EBU R128 normalizer: {}", e))?;
 
         let true_peak_limit = 10_f32.powf(TRUE_PEAK_LIMIT as f32 / 20.0);
 
         Ok(Self {
-            ebur128,
+            recent,
+            eligible,
             limiter: TruePeakLimiter::new(sample_rate),
             gain_linear: 1.0,
             loudness_buffer: Vec::with_capacity(ANALYZE_CHUNK_SIZE),
@@ -176,19 +178,19 @@ impl LoudnessNormalizer {
         })
     }
 
-    /// Normalize loudness using EBU R128 standard with true peak limiting
-    ///
-    /// This maintains cumulative loudness measurements across all processed audio,
-    /// resulting in consistent normalization that sounds natural.
-    ///
-    /// Target: -23 LUFS (professional broadcast standard for speech/dialog)
-    /// Applies sample-by-sample with 10ms lookahead limiter to prevent clipping
+    /// Normalize toward -23 LUFS with at most +12 dB gain and true-peak limiting.
+    /// Only input analysed while the most recent 400 ms measured at least -45 LUFS
+    /// contributes to the gain target, and gain may rise only during such input.
+    /// This is a level guard, not speech detection: quiet input is still emitted,
+    /// and an established gain is held through a quiet gap.
     pub fn normalize_loudness(&mut self, samples: &[f32]) -> Vec<f32> {
         if samples.is_empty() {
             return Vec::new();
         }
 
         const TARGET_LUFS: f64 = -23.0;
+        const MAX_GAIN_DB: f64 = 12.0;
+        const MIN_GAIN_INPUT_LUFS: f64 = -45.0;
         const ANALYZE_CHUNK_SIZE: usize = 512;
 
         let mut normalized_samples = Vec::with_capacity(samples.len());
@@ -199,14 +201,20 @@ impl LoudnessNormalizer {
 
             // Analyze loudness every 512 samples
             if self.loudness_buffer.len() >= ANALYZE_CHUNK_SIZE {
-                if let Err(e) = self.ebur128.add_frames_f32(&self.loudness_buffer) {
-                    warn!("Failed to add frames to EBU R128: {}", e);
+                if let Err(e) = self.recent.add_frames_f32(&self.loudness_buffer) {
+                    warn!("Failed to add frames to recent EBU R128 meter: {}", e);
                 } else {
-                    // Update gain based on cumulative loudness
-                    if let Ok(current_lufs) = self.ebur128.loudness_global() {
-                        if current_lufs.is_finite() && current_lufs < 0.0 {
-                            let gain_db = TARGET_LUFS - current_lufs;
-                            self.gain_linear = 10_f32.powf(gain_db as f32 / 20.0);
+                    let is_eligible = self.recent.loudness_momentary().is_ok_and(|recent| {
+                        recent.is_finite() && recent >= MIN_GAIN_INPUT_LUFS
+                    });
+                    if is_eligible {
+                        if let Err(e) = self.eligible.add_frames_f32(&self.loudness_buffer) {
+                            warn!("Failed to add frames to eligible EBU R128 meter: {}", e);
+                        } else if let Ok(current_lufs) = self.eligible.loudness_global() {
+                            if current_lufs.is_finite() && current_lufs < 0.0 {
+                                let gain_db = (TARGET_LUFS - current_lufs).min(MAX_GAIN_DB);
+                                self.gain_linear = 10_f32.powf(gain_db as f32 / 20.0);
+                            }
                         }
                     }
                 }
@@ -736,4 +744,145 @@ pub fn write_transcript_json_to_file(
     std::fs::write(&file_path, json_string)?;
 
     Ok(file_path.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod loudness_normalizer_tests {
+    use super::LoudnessNormalizer;
+
+    const RATE: u32 = 48_000;
+
+    fn tone(amplitude: f32, seconds: usize) -> Vec<f32> {
+        (0..RATE as usize * seconds)
+            .map(|i| amplitude * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / RATE as f32).sin())
+            .collect()
+    }
+
+    fn rms(samples: &[f32]) -> f32 {
+        (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+    }
+
+    fn render(normalizer: &mut LoudnessNormalizer, input: &[f32]) -> Vec<f32> {
+        input.chunks(1536).flat_map(|chunk| normalizer.normalize_loudness(chunk)).collect()
+    }
+
+    #[test]
+    fn quiet_background_does_not_raise_gain_or_mute_audio() {
+        let input = tone(0.003, 4);
+        let mut normalizer = LoudnessNormalizer::new(1, RATE).unwrap();
+        let output = render(&mut normalizer, &input);
+        assert_eq!(output.len(), input.len());
+        let steady = RATE as usize..input.len();
+        let ratio = rms(&output[steady.clone()]) / rms(&input[steady]);
+        assert!((0.98..=1.02).contains(&ratio), "quiet signal changed by {ratio}x");
+    }
+
+    #[test]
+    fn eligible_signal_normalizes_without_always_using_the_cap() {
+        let input = tone(0.04, 3);
+        let mut normalizer = LoudnessNormalizer::new(1, RATE).unwrap();
+        let output = render(&mut normalizer, &input);
+        let output_db = 20.0 * rms(&output[2 * RATE as usize..]).log10();
+        assert!((-23.5..=-21.5).contains(&output_db), "output was {output_db} dBFS");
+    }
+
+    #[test]
+    fn eligible_low_signal_never_exceeds_twelve_db_gain() {
+        let input = tone(0.012, 3);
+        let mut normalizer = LoudnessNormalizer::new(1, RATE).unwrap();
+        let ceiling = 10_f32.powf(12.0 / 20.0);
+        let mut output = Vec::with_capacity(input.len());
+        for chunk in input.chunks(1536) {
+            output.extend(normalizer.normalize_loudness(chunk));
+            assert!(normalizer.gain_linear <= ceiling * 1.00001);
+        }
+        let steady = 2 * RATE as usize..input.len();
+        let ratio = rms(&output[steady.clone()]) / rms(&input[steady]);
+        assert!((3.9..=4.0).contains(&ratio), "eligible signal gain was {ratio}x");
+    }
+
+    #[test]
+    fn settled_quiet_gap_cannot_raise_established_gain() {
+        let mut normalizer = LoudnessNormalizer::new(1, RATE).unwrap();
+        // Pre-guard behaviour measured every frame; replay it to prove the quiet gap matters.
+        let mut all_input = ebur128::EbuR128::new(1, RATE, ebur128::Mode::I).unwrap();
+        let loud = tone(0.04, 2);
+        render(&mut normalizer, &loud);
+        all_input.add_frames_f32(&loud).unwrap();
+        // About -47 LUFS: under the -45 LUFS guard but above the relative gate,
+        // so measuring all input would pull loudness down and raise the target.
+        let quiet = tone(0.0063, 1);
+        // Let the recent 400 ms window expire before asserting the hold.
+        render(&mut normalizer, &quiet);
+        all_input.add_frames_f32(&quiet).unwrap();
+        let held = normalizer.gain_linear;
+        for _ in 0..20 {
+            let output = render(&mut normalizer, &quiet);
+            all_input.add_frames_f32(&quiet).unwrap();
+            assert!(normalizer.gain_linear <= held + 0.00001);
+            assert!(rms(&output) <= rms(&quiet) * held * 1.02);
+        }
+        let all_input_target_db = (-23.0 - all_input.loudness_global().unwrap()).min(12.0);
+        assert!(
+            all_input_target_db > 20.0 * (held as f64).log10() + 1.0,
+            "the quiet gap would not have raised gain without the guard"
+        );
+    }
+
+    #[test]
+    fn loud_moment_cannot_unlock_gain_learned_from_background() {
+        let mut normalizer = LoudnessNormalizer::new(1, RATE).unwrap();
+        // About -50 LUFS of background: the integrated target reaches the +12 dB cap.
+        render(&mut normalizer, &tone(0.0045, 20));
+        assert!((normalizer.gain_linear - 1.0).abs() < 0.00001);
+        // A short knock at about -27 LUFS needs only about +4 dB.
+        render(&mut normalizer, &tone(0.06, 1));
+        let gain_db = 20.0 * normalizer.gain_linear.log10();
+        assert!(gain_db <= 6.0, "a loud moment unlocked {gain_db} dB of gain");
+        let background = tone(0.0045, 2);
+        let output = render(&mut normalizer, &background);
+        // Skip the limiter lookahead, which still releases the end of the knock.
+        let settled = RATE as usize / 2..background.len();
+        assert!(rms(&output[settled.clone()]) <= rms(&background[settled]) * 2.0);
+    }
+
+    #[test]
+    fn quiet_input_cannot_relax_existing_attenuation() {
+        let mut normalizer = LoudnessNormalizer::new(1, RATE).unwrap();
+        render(&mut normalizer, &tone(0.5, 2));
+        let quiet = tone(0.001, 1);
+        render(&mut normalizer, &quiet);
+        assert!(normalizer.recent.loudness_momentary().unwrap() < -45.0);
+        // Exercise a pending increase that is still below unity: less attenuation
+        // must not bypass the same recent-level guard as positive gain.
+        let held = normalizer.gain_linear * 0.5;
+        normalizer.gain_linear = held;
+        let output = render(&mut normalizer, &quiet);
+        assert!(normalizer.gain_linear <= held + 0.00001);
+        assert!(rms(&output) <= rms(&quiet) * held * 1.02);
+    }
+
+    #[test]
+    fn capture_chunk_boundaries_do_not_change_normalized_audio() {
+        let mut input = tone(0.003, 2);
+        input.extend(tone(0.04, 2));
+        input.extend(tone(0.001, 2));
+        let mut whole = LoudnessNormalizer::new(1, RATE).unwrap();
+        let expected = whole.normalize_loudness(&input);
+        let mut split = LoudnessNormalizer::new(1, RATE).unwrap();
+        let mut actual = Vec::with_capacity(input.len());
+        let sizes = [7, 511, 97, 4096, 513];
+        let mut offset = 0;
+        let mut index = 0;
+        while offset < input.len() {
+            let end = (offset + sizes[index % sizes.len()]).min(input.len());
+            actual.extend(split.normalize_loudness(&input[offset..end]));
+            offset = end;
+            index += 1;
+        }
+        assert_eq!(actual, expected);
+        let eligible_tail = &actual[3 * RATE as usize..4 * RATE as usize];
+        let output_db = 20.0 * rms(eligible_tail).log10();
+        assert!((-23.5..=-21.5).contains(&output_db));
+    }
 }

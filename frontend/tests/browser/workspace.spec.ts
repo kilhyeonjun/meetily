@@ -154,7 +154,7 @@ test('keyboard menu navigation reaches a trapped dialog and Escape restores the 
 
 test('document properties add, persist, edit, delete and undo with accessible controls', async ({page}) => {
   await page.goto('/meeting-details?id=agenda');
-  const header = page.getByRole('banner', {name: 'Document properties'});
+  const header = page.locator('header[aria-label="Document properties"]');
   await expect(header.getByRole('button', {name: 'Add property', exact: true})).toBeEnabled();
   await header.getByRole('button', {name: 'Add property', exact: true}).click();
   const form = page.getByRole('form', {name: 'Add property', exact: true});
@@ -222,11 +222,13 @@ test('property form validates URLs and Notion paste prefills label', async ({pag
 
 test('captures light and dark properties header states', async ({page}) => {
   await page.goto('/meeting-details?id=agenda');
-  const header = page.getByRole('banner', {name: 'Document properties'});
+  const header = page.locator('header[aria-label="Document properties"]');
   await expect(header.getByRole('button', {name: 'Add property', exact: true})).toBeEnabled();
+  await expect(page.getByRole('textbox', {name: 'Document title'})).toHaveCSS('font-size', '30px');
   for (const mode of ['light', 'dark']) {
     await page.evaluate(mode => document.documentElement.classList.toggle('dark', mode === 'dark'), mode);
-    await header.screenshot({path: `/tmp/meetily-props-shots/${mode}-empty.png`});
+    await expect(header).toHaveCSS('background-color', mode === 'dark' ? 'rgb(10, 10, 10)' : 'rgb(255, 255, 255)');
+    await header.screenshot({path: `/tmp/meetily-props-shots/${mode}-empty.png`, animations: 'disabled'});
   }
   for (const [label, url] of [['Notion', 'https://notion.so/meeting'], ['Project', 'https://example.com/project']]) {
     await header.getByRole('button', {name: 'Add property', exact: true}).click();
@@ -238,10 +240,10 @@ test('captures light and dark properties header states', async ({page}) => {
   }
   for (const mode of ['light', 'dark']) {
     await page.evaluate(mode => document.documentElement.classList.toggle('dark', mode === 'dark'), mode);
-    await header.screenshot({path: `/tmp/meetily-props-shots/${mode}-two-links.png`});
+    await header.screenshot({path: `/tmp/meetily-props-shots/${mode}-two-links.png`, animations: 'disabled'});
     await header.getByRole('button', {name: 'Add property', exact: true}).click();
     await page.getByRole('textbox', {name: 'Property label'}).fill('Reference');
-    await page.screenshot({path: `/tmp/meetily-props-shots/${mode}-add-popover.png`});
+    await page.screenshot({path: `/tmp/meetily-props-shots/${mode}-add-popover.png`, animations: 'disabled'});
     await page.keyboard.press('Escape');
   }
 });

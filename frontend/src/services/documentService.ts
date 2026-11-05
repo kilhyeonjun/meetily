@@ -6,7 +6,7 @@ export interface DocumentInfo {
   created_at: string; updated_at: string;
 }
 export interface DocumentFolder {id:string;name:string;parent_id:string|null;created_at:string;updated_at:string}
-export interface PropertyInput { kind: 'url' | 'text'; label: string; value: string }
+export interface PropertyInput { id?: string; kind: 'url' | 'text'; label: string; value: string }
 export interface DocumentProperty extends PropertyInput {
   id: string; meeting_id: string; position: number; created_at: string; updated_at: string;
 }

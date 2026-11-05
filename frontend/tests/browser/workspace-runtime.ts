@@ -58,12 +58,16 @@ export async function invoke(command: string, args: Record<string, any> = {}) {
       return { ...structuredClone(documents.find(doc => doc.id === args.documentId)), created_at: stamp, folder_path: null, recording_session_id: null, has_recording: false };
     case 'api_get_document_properties':
       return structuredClone(properties[args.documentId] ?? []);
-    case 'api_set_document_properties':
-      properties[args.documentId] = args.properties.map((property: PropertyInput, position: number) => ({
-        ...property, id: crypto.randomUUID(), meeting_id: args.documentId, position, created_at: stamp, updated_at: stamp,
-      }));
+    case 'api_set_document_properties': {
+      const previous = new Map((properties[args.documentId] ?? []).map(property => [property.id, property]));
+      properties[args.documentId] = args.properties.map((property: PropertyInput, position: number) => {
+        const owned = property.id ? previous.get(property.id) : undefined;
+        if (owned) previous.delete(owned.id);
+        return {...property, id: owned?.id ?? crypto.randomUUID(), meeting_id: args.documentId, position, created_at: owned?.created_at ?? stamp, updated_at: stamp};
+      });
       persist();
       return structuredClone(properties[args.documentId]);
+    }
     case 'open_external_url':
       return;
     case 'api_get_folders':

@@ -1,10 +1,12 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PropertyInput {
+    pub id: Option<String>,
     pub kind: String,
     pub label: String,
     pub value: String,
@@ -26,6 +28,14 @@ pub struct DocumentPropertiesRepository;
 
 fn invalid(message: &str) -> sqlx::Error {
     sqlx::Error::Protocol(message.to_owned())
+}
+
+pub fn user_message(error: sqlx::Error) -> String {
+    match error {
+        sqlx::Error::Protocol(message) => message,
+        sqlx::Error::RowNotFound => "Document not found".to_owned(),
+        other => other.to_string(),
+    }
 }
 
 impl DocumentPropertiesRepository {
@@ -64,14 +74,24 @@ impl DocumentPropertiesRepository {
         if found.rows_affected() == 0 {
             return Err(sqlx::Error::RowNotFound);
         }
+        let mut previous: HashMap<String, String> = sqlx::query_as::<_, (String, String)>(
+            "SELECT id, created_at FROM document_properties WHERE meeting_id = ?",
+        ).bind(meeting_id).fetch_all(&mut *tx).await?.into_iter().collect();
         sqlx::query("DELETE FROM document_properties WHERE meeting_id = ?")
             .bind(meeting_id).execute(&mut *tx).await?;
         let now = Utc::now().to_rfc3339();
         for (position, property) in properties.into_iter().enumerate() {
+            let (id, created_at) = match property.id {
+                Some(id) => match previous.remove(&id) {
+                    Some(created_at) => (id, created_at),
+                    None => (Uuid::new_v4().to_string(), now.clone()),
+                },
+                None => (Uuid::new_v4().to_string(), now.clone()),
+            };
             sqlx::query("INSERT INTO document_properties (id, meeting_id, kind, label, value, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-                .bind(Uuid::new_v4().to_string()).bind(meeting_id).bind(property.kind)
+                .bind(id).bind(meeting_id).bind(property.kind)
                 .bind(property.label.trim()).bind(property.value.trim()).bind(position as i64)
-                .bind(&now).bind(&now).execute(&mut *tx).await?;
+                .bind(created_at).bind(&now).execute(&mut *tx).await?;
         }
         let stored = sqlx::query_as("SELECT * FROM document_properties WHERE meeting_id = ? ORDER BY position, id")
             .bind(meeting_id).fetch_all(&mut *tx).await?;
@@ -86,7 +106,7 @@ mod tests {
     use crate::database::repositories::{document::DocumentsRepository, meeting_notes::test_support::test_pool};
 
     fn input(kind: &str, label: &str, value: &str) -> PropertyInput {
-        PropertyInput { kind: kind.into(), label: label.into(), value: value.into() }
+        PropertyInput { id: None, kind: kind.into(), label: label.into(), value: value.into() }
     }
 
     #[tokio::test]
@@ -120,6 +140,31 @@ mod tests {
         assert!(DocumentPropertiesRepository::replace(&pool, "missing", vec![]).await.is_err());
         assert_eq!(DocumentPropertiesRepository::list(&pool, &doc.id).await.unwrap()[0].value, "Original");
         assert!(DocumentPropertiesRepository::replace(&pool, &doc.id, vec![]).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn preserves_owned_ids_and_creation_times_only_once() {
+        let pool = test_pool().await;
+        let first = DocumentsRepository::create(&pool, "First", "meeting", None, None).await.unwrap();
+        let second = DocumentsRepository::create(&pool, "Second", "note", None, None).await.unwrap();
+        let saved = DocumentPropertiesRepository::replace(&pool, &first.id, vec![input("text", "Owner", "Team")]).await.unwrap().remove(0);
+        sqlx::query("UPDATE document_properties SET created_at = '2020-01-01' WHERE id = ?").bind(&saved.id).execute(&pool).await.unwrap();
+        let mut edited = input("text", "Owner", "New team");
+        edited.id = Some(saved.id.clone());
+        let foreign = DocumentPropertiesRepository::replace(&pool, &second.id, vec![edited.clone()]).await.unwrap();
+        assert_ne!(foreign[0].id, saved.id);
+        let replaced = DocumentPropertiesRepository::replace(&pool, &first.id, vec![edited.clone(), edited]).await.unwrap();
+        assert_eq!(replaced[0].id, saved.id);
+        assert_eq!(replaced[0].created_at, "2020-01-01");
+        assert_eq!(replaced[0].value, "New team");
+        assert_ne!(replaced[1].id, saved.id);
+        assert_ne!(replaced[1].created_at, "2020-01-01");
+    }
+
+    #[test]
+    fn validation_and_not_found_messages_are_plain() {
+        assert_eq!(user_message(invalid("Invalid property kind")), "Invalid property kind");
+        assert_eq!(user_message(sqlx::Error::RowNotFound), "Document not found");
     }
 
     #[tokio::test]

@@ -13,7 +13,7 @@ test('legacy transcript-only and summary-only meetings remain recorded with no p
 
 test('properties commands pass ordered typed inputs and document ID', async () => {
   calls.length = 0;
-  const properties = [{kind: 'url' as const, label: 'Notion', value: 'https://notion.so/meeting'}, {kind: 'text' as const, label: 'Owner', value: 'Team'}];
+  const properties = [{id: 'existing-link', kind: 'url' as const, label: 'Notion', value: 'https://notion.so/meeting'}, {kind: 'text' as const, label: 'Owner', value: 'Team'}];
   await documentService.getProperties('prepared');
   await documentService.setProperties('prepared', properties);
   expect(calls).toEqual([

@@ -1245,12 +1245,22 @@ pub async fn debug_backend_connection<R: Runtime>(app: AppHandle<R>) -> Result<S
     }
 }
 
+fn validate_external_url(value: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(value)
+        .map_err(|_| "Enter a valid HTTP or HTTPS URL".to_owned())?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err("Enter a valid HTTP or HTTPS URL".to_owned());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn open_external_url(url: String) -> Result<(), String> {
     use std::process::Command;
+    validate_external_url(&url)?;
 
     let result = if cfg!(target_os = "windows") {
-        Command::new("cmd").args(&["/C", "start", &url]).output()
+        Command::new("rundll32").args(["url.dll,FileProtocolHandler", &url]).output()
     } else if cfg!(target_os = "macos") {
         Command::new("open").arg(&url).output()
     } else {
@@ -1261,6 +1271,25 @@ pub async fn open_external_url(url: String) -> Result<(), String> {
     match result {
         Ok(_) => Ok(()),
         Err(e) => Err(format!("Failed to open URL: {}", e)),
+    }
+}
+
+#[cfg(test)]
+mod external_url_tests {
+    use super::validate_external_url;
+
+    #[test]
+    fn rejects_non_web_urls_before_spawning() {
+        for value in ["", "not a URL", "javascript:alert(1)", "file:///tmp/file", "ftp://example.com"] {
+            assert!(validate_external_url(value).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn accepts_web_urls_with_ampersands_as_literal_arguments() {
+        for value in ["https://notion.so/meeting", "http://example.com", "https://example.com/?a=1&b=2"] {
+            assert!(validate_external_url(value).is_ok(), "{value}");
+        }
     }
 }
 

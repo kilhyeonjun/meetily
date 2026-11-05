@@ -113,14 +113,15 @@ export function DocumentControls({ document, folders, onUpdated }: {
   const save = async (work: () => Promise<unknown>, revert: () => void = () => {}) => {
     if (busy.current) return false;
     busy.current = true; setSaving(true); setSaved(false);
-    try { await work(); }
-    catch (error) { revert(); toast.error(String(error)); return false; }
-    finally { busy.current = false; setSaving(false); }
-    setSaved(true);
-    // Refresh errors must not misrepresent a committed write as a failed save.
-    try { await onUpdated(); await refetchMeetings(); window.dispatchEvent(new Event('documents-changed')); }
-    catch (error) { toast.error(`Saved, but could not refresh: ${String(error)}`); }
-    return true;
+    try {
+      try { await work(); }
+      catch (error) { revert(); toast.error(String(error)); return false; }
+      setSaved(true);
+      // Refresh errors must not misrepresent a committed write as a failed save.
+      try { await onUpdated(); await refetchMeetings(); window.dispatchEvent(new Event('documents-changed')); }
+      catch (error) { toast.error(`Saved, but could not refresh: ${String(error)}`); }
+      return true;
+    } finally { busy.current = false; setSaving(false); }
   };
   const saveTitle = async () => {
     const next = title.trim();
@@ -150,7 +151,7 @@ export function DocumentControls({ document, folders, onUpdated }: {
   return <header aria-label="Document properties" className="border-b bg-background px-6 py-5 text-foreground">
     <div className="mb-4 flex items-start gap-3">
       <div className="min-w-0 flex-1">
-        <Input aria-label="Document title" aria-invalid={!!titleError} aria-describedby={titleError ? 'document-title-error' : undefined} disabled={saving} className="h-auto border-transparent bg-transparent px-0 py-1 text-3xl font-semibold shadow-none hover:border-input focus-visible:px-2" value={title} onChange={event => {setTitle(event.target.value); setTitleError(null);}} onBlur={() => void saveTitle()} onKeyDown={event => {
+        <Input aria-label="Document title" aria-invalid={!!titleError} aria-describedby={titleError ? 'document-title-error' : undefined} disabled={saving} className="h-auto border-transparent bg-transparent px-0 py-1 text-3xl font-semibold shadow-none hover:border-input focus-visible:px-2 md:text-3xl" value={title} onChange={event => {setTitle(event.target.value); setTitleError(null);}} onBlur={() => void saveTitle()} onKeyDown={event => {
           if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); }
           if (event.key === 'Escape') { event.preventDefault(); setTitle(committed.current.title); setTitleError(null); }
         }}/>
@@ -165,7 +166,7 @@ export function DocumentControls({ document, folders, onUpdated }: {
           <PopoverContent align="start" className="w-80 p-0"><Command><CommandInput placeholder="Search folders…" aria-label="Search folders"/><CommandList><CommandEmpty>No folders found.</CommandEmpty>{[{id: '', path: 'Unfiled'}, ...folders.map(folder => ({id: folder.id, path: folderPath(folder.id, folders)}))].map(folder => <CommandItem key={folder.id} value={folder.path} onSelect={() => {setFolderOpen(false); void save(() => documentService.move(document.id, folder.id || null));}}><Check className={`${iconClass} ${folder.id === (document.folder_id ?? '') ? '' : 'opacity-0'}`}/>{folder.path}</CommandItem>)}</CommandList></Command></PopoverContent>
         </Popover>
       </PropertyRow>
-      {document.document_type === 'meeting' && <PropertyRow icon={<CalendarDays className={iconClass}/>} label="Scheduled"><div className="flex items-center gap-1"><Input aria-label="Scheduled time" type="datetime-local" disabled={saving} className="h-8 w-auto max-w-full border-transparent shadow-none hover:border-input" value={schedule} onChange={event => void saveSchedule(event.target.value)}/>{schedule && <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Clear scheduled time" disabled={saving} onClick={() => void saveSchedule('')}><X className="h-3 w-3"/></Button>}</div></PropertyRow>}
+      {document.document_type === 'meeting' && <PropertyRow icon={<CalendarDays className={iconClass}/>} label="Scheduled"><div className="flex items-center gap-1"><Input aria-label="Scheduled time" type="datetime-local" disabled={saving} className="h-8 w-auto max-w-full border-transparent shadow-none hover:border-input dark:[color-scheme:dark]" value={schedule} onChange={event => void saveSchedule(event.target.value)}/>{schedule && <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Clear scheduled time" disabled={saving} onClick={() => void saveSchedule('')}><X className="h-3 w-3"/></Button>}</div></PropertyRow>}
       <PropertyRow icon={<Clock className={iconClass}/>} label="Created"><time dateTime={document.created_at} className="px-2 text-muted-foreground">{localSchedule(document.created_at).replace('T', ' ') || '—'}</time></PropertyRow>
       {properties.map((property, index) => <PropertyRow key={property.id} icon={property.kind === 'url' ? <LinkIcon className={iconClass}/> : <Type className={iconClass}/>} label={<span title={property.label}>{property.label}</span>}>
         <div className="flex min-w-0 items-center gap-1">

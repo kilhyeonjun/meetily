@@ -1,6 +1,8 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
     darkMode: ['class'],
+    // The theme class is applied at runtime, including in the properties fixture.
+    safelist: ['dark'],
     content: [
     './src/pages/**/*.{js,ts,jsx,tsx,mdx}',
     './src/components/**/*.{js,ts,jsx,tsx,mdx}',

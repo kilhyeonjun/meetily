@@ -143,6 +143,9 @@ test('keyboard menu navigation reaches a trapped dialog and Escape restores the 
   await expect(page.getByRole('menuitem', { name: 'Move', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(page.getByRole('textbox', { name: 'Search destinations' })).toBeFocused();
+  // No retry: the outgoing menu must unmount with the select, not after an
+  // exit animation, or its dismiss layer can swallow the dialog's Escape.
+  expect(await page.locator('[role=menu]').count()).toBe(0);
   await page.keyboard.press('Shift+Tab');
   await expect(page.getByRole('button', { name: 'Close dialog', exact: true })).toBeFocused();
   await page.keyboard.press('Shift+Tab');

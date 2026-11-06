@@ -102,6 +102,20 @@ export function WorkspaceBrowser({ folderId }: { folderId?: string }) {
       ? 'Unfiled'
       : 'All documents';
   const itemCount = folders.length + documents.length;
+  // All documents lists every document wherever it is filed, so each row says where it lives.
+  const showLocation = !current && selected !== 'unfiled';
+  const columns = showLocation
+    ? 'grid-cols-[minmax(0,1fr)_2.5rem] @xl:grid-cols-[minmax(0,1fr)_11rem_7rem_9rem_4rem]'
+    : 'grid-cols-[minmax(0,1fr)_2.5rem] @xl:grid-cols-[minmax(0,1fr)_7rem_9rem_4rem]';
+  const headerColumns = showLocation
+    ? 'grid-cols-[minmax(0,1fr)_11rem_7rem_9rem_4rem]'
+    : 'grid-cols-[minmax(0,1fr)_7rem_9rem_4rem]';
+  const location = (folderId: string | null | undefined) =>
+    folderId
+      ? folderAncestors(folderId, workspace.folders)
+          .map((folder) => folder.name)
+          .join(' / ')
+      : 'Unfiled';
   return (
     <section
       aria-label="Workspace browser"
@@ -287,8 +301,11 @@ export function WorkspaceBrowser({ folderId }: { folderId?: string }) {
             if (item) void workspace.move(item, current).catch((cause) => setError(String(cause)));
           }}
         >
-          <div className="hidden grid-cols-[minmax(0,1fr)_7rem_9rem_4rem] gap-3 border-b border-slate-100 bg-slate-50/70 px-5 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 @xl:grid">
+          <div
+            className={`hidden ${headerColumns} gap-3 border-b border-slate-100 bg-slate-50/70 px-5 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500 @xl:grid`}
+          >
             <span>Name</span>
+            {showLocation && <span>Location</span>}
             <span>Type</span>
             <span>Updated</span>
             <span className="text-right">Actions</span>
@@ -297,7 +314,7 @@ export function WorkspaceBrowser({ folderId }: { folderId?: string }) {
             {folders.map((folder) => (
               <div
                 data-folder-row={folder.id}
-                className="group grid grid-cols-[minmax(0,1fr)_2.5rem] gap-3 items-center px-4 py-3 transition hover:bg-blue-50/40 @xl:grid-cols-[minmax(0,1fr)_7rem_9rem_4rem] @xl:px-5"
+                className={`group grid ${columns} gap-3 items-center px-4 py-3 transition hover:bg-blue-50/40 @xl:px-5`}
                 key={folder.id}
                 draggable
                 onDragStart={(event) => dragItem(event, { type: 'folder', id: folder.id })}
@@ -324,6 +341,7 @@ export function WorkspaceBrowser({ folderId }: { folderId?: string }) {
                     </span>
                   </span>
                 </button>
+                {showLocation && <span className="hidden @xl:block" />}
                 <span className="hidden text-sm text-slate-500 @xl:block">Folder</span>
                 <time
                   className="hidden text-sm text-slate-500 @xl:block"
@@ -336,7 +354,7 @@ export function WorkspaceBrowser({ folderId }: { folderId?: string }) {
             ))}
             {documents.map((doc) => (
               <div
-                className="group grid grid-cols-[minmax(0,1fr)_2.5rem] gap-3 items-center px-4 py-3 transition hover:bg-blue-50/40 @xl:grid-cols-[minmax(0,1fr)_7rem_9rem_4rem] @xl:px-5"
+                className={`group grid ${columns} gap-3 items-center px-4 py-3 transition hover:bg-blue-50/40 @xl:px-5`}
                 key={doc.id}
                 draggable
                 onDragStart={(event) => dragItem(event, { type: 'document', id: doc.id })}
@@ -358,10 +376,21 @@ export function WorkspaceBrowser({ folderId }: { folderId?: string }) {
                     <span className="block truncate font-medium text-slate-800">{doc.title}</span>
                     <span className="mt-0.5 block text-xs text-slate-400 @xl:hidden">
                       {doc.document_type === 'note' ? 'Personal note' : 'Meeting'} ·{' '}
+                      {showLocation && `${location(doc.folder_id)} · `}
                       {updated(doc.updated_at)}
                     </span>
                   </span>
                 </button>
+                {showLocation && (
+                  <button
+                    className="hidden min-w-0 truncate rounded text-left text-sm text-slate-500 hover:text-slate-900 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 @xl:block"
+                    data-document-location={doc.id}
+                    title={location(doc.folder_id)}
+                    onClick={() => navigate(doc.folder_id ?? 'unfiled')}
+                  >
+                    {location(doc.folder_id)}
+                  </button>
+                )}
                 <span className="hidden text-sm text-slate-500 @xl:block">
                   {doc.document_type === 'note' ? 'Personal note' : 'Meeting'}
                 </span>

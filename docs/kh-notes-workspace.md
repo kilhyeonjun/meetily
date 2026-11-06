@@ -65,6 +65,9 @@ pnpm build
 The **KH Apple Silicon verification** workflow also runs native Rust library
 tests and builds the summary sidecar and macOS app. It produces a short-lived
 arm64 app artifact with an ad-hoc signature; it is not an Apple-notarized release.
+It runs once per PR (opened, reopened or marked ready; drafts are skipped), not
+on later pushes. To verify commits pushed after that, run
+`gh workflow run kh-macos.yml --ref <branch>`.
 
 Local macOS app builds need a Cargo target directory without spaces (for
 example, not under `~/Library/Application Support`). whisper-rs-sys 0.11 inlines

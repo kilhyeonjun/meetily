@@ -1,10 +1,11 @@
 name: KH Apple Silicon verification
 
 on:
-  push:
-    branches: [enhance/kh-notes-workspace, enhance/kh-workspace-v2]
+  # Once per PR, not on every pushed commit: macOS minutes are the bottleneck.
+  # Re-verify later commits with `gh workflow run kh-macos.yml --ref <branch>`.
   pull_request:
     branches: [main, devtest]
+    types: [opened, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions:
@@ -16,7 +17,7 @@ concurrency:
 
 jobs:
   verify:
-    if: github.repository == 'kilhyeonjun/meetily'
+    if: github.repository == 'kilhyeonjun/meetily' && !github.event.pull_request.draft
     runs-on: macos-15
     timeout-minutes: 90
     env:

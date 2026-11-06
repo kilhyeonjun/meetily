@@ -4,7 +4,7 @@ This integration extends prepared meetings and manual notes with nested folders 
 
 ## Working with folders
 
-- The sidebar selects All documents, Unfiled or a folder. Expand folders to browse their children; the content browser shows the selected folder's immediate children and documents.
+- The sidebar selects All documents, Unfiled or a folder. Expand folders to browse their children; the content browser shows the selected folder's immediate children and documents. All documents lists the top-level folders and every document wherever it is filed; its Location column shows each document's folder path (or Unfiled) and opens that folder.
 - Breadcrumbs, search, sorting and row menus support browsing and moving items. New meetings, notes and subfolders use the selected folder.
 - Folder names are unique within their parent. Move cannot create a cycle. A folder containing subfolders must have them moved first; deleting a leaf folder sends its documents to Unfiled.
 - Folder organization does not relocate audio files or delete recordings. The new migration preserves existing root folders, IDs and meeting memberships. Existing applied migrations are unchanged.

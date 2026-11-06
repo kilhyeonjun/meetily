@@ -13,6 +13,17 @@ let renderer:ReactTestRenderer|undefined;const text=(n:any):string=>typeof n==='
 afterEach(async()=>{if(renderer)await act(async()=>renderer!.unmount());renderer=undefined;calls.length=0;globalThis.window=oldWindow;globalThis.document=oldDocument;});afterAll(()=>{mock.module('@tauri-apps/api/core',()=>core);mock.module('next/navigation',()=>nav);mock.module('@tauri-apps/api/event',()=>events);});
 test('selected folder browser creates a child in current folder and shows only immediate folder/doc rows',async()=>{globalThis.window={addEventListener(){},removeEventListener(){},dispatchEvent(){},localStorage:{getItem:()=>null,setItem(){}}} as any;await act(async()=>{renderer=create(<WorkspaceProvider><WorkspaceBrowser folderId="a"/></WorkspaceProvider>);});expect(text(renderer!.toJSON())).toContain('Agenda');expect(renderer!.root.findAllByProps({'data-folder-row':'b'})).toHaveLength(1);expect(renderer!.root.findAllByProps({'data-folder-row':'c'})).toHaveLength(0);await act(async()=>button('New subfolder').props.onClick());act(()=>renderer!.root.findByProps({'aria-label':'Name'}).props.onChange({target:{value:'Child'}}));await act(async()=>renderer!.root.findByType('form').props.onSubmit({preventDefault(){}}));expect(calls).toContainEqual(['api_create_folder',{name:'Child',parentId:'a'}]);});
 
+test('all documents names the folder of each filed document and opens it; a folder view does not',async()=>{
+  globalThis.window={addEventListener(){},removeEventListener(){},dispatchEvent(){},localStorage:{getItem:()=>null,setItem(){}}} as unknown as Window & typeof globalThis;
+  await act(async()=>{renderer=create(<WorkspaceProvider><WorkspaceBrowser/></WorkspaceProvider>);});
+  const place=renderer!.root.findByProps({'data-document-location':'doc'});
+  expect(text(place)).toBe('Research');
+  act(()=>place.props.onClick());
+  expect(push).toHaveBeenLastCalledWith('/workspace?folderId=a');
+  await act(async()=>renderer!.update(<WorkspaceProvider><WorkspaceBrowser folderId="a"/></WorkspaceProvider>));
+  expect(renderer!.root.findAllByProps({'data-document-location':'doc'})).toHaveLength(0);
+});
+
 test('selected nested folder expands its ancestors, tree keyboard moves focus and drop uses the same move command once',async()=>{
   const focused:string[]=[];const data=new Map<string,string>();globalThis.window={addEventListener(){},removeEventListener(){},dispatchEvent(){},localStorage:{getItem:(k:string)=>data.get(k)??null,setItem:(k:string,v:string)=>data.set(k,v)}} as any;
   await act(async()=>{renderer=create(<WorkspaceProvider><WorkspaceTree/><WorkspaceBrowser folderId="b"/></WorkspaceProvider>,{createNodeMock:node=>node.props['data-folder-id']?{focus(){focused.push(node.props['data-folder-id']);}}:null});});

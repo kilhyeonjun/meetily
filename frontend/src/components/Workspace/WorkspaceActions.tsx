@@ -111,7 +111,9 @@ export function WorkspaceActions({ item, label }: { item: WorkspaceItem; label: 
         </DropdownMenuTrigger>
         <DropdownMenuContent
           align="end"
-          className="min-w-44 rounded-xl border-slate-200 bg-white p-1.5 text-slate-700 shadow-lg data-[state=closed]:animate-none"
+          // `!`: the shared base's `animate-out` is emitted later in the CSS and would
+          // otherwise keep the closed menu mounted as a dismiss layer under the dialog.
+          className="min-w-44 rounded-xl border-slate-200 bg-white p-1.5 text-slate-700 shadow-lg data-[state=closed]:!animate-none"
           onInteractOutside={(event) => {
             // The trigger owns toggling; an outgoing layer must not dismiss a
             // newly reopened menu for the same trigger's pointer/focus event.
